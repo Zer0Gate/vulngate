@@ -70,6 +70,28 @@ class HardeningControlTests(unittest.TestCase):
         self.assertEqual("requires-github-admin-readback",
                          result["remote_enforcement"])
 
+    def test_required_check_rejects_failed_cancelled_and_skipped_matrix(self):
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        gate = workflow.split("  test:\n", 1)[1].split("  security:\n", 1)[0]
+        command = next(line.split("run: ", 1)[1] for line in gate.splitlines()
+                       if "run: " in line)
+        for result in ("success", "failure", "cancelled", "skipped", ""):
+            with self.subTest(result=result):
+                completed = subprocess.run(
+                    ["bash", "-c", command],
+                    env={"REGRESSION_RESULT": result}, check=False)
+                self.assertEqual(result == "success", completed.returncode == 0)
+
+    def test_governance_rejects_matrix_job_as_required_aggregate(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            shutil.copytree(ROOT / ".github", root / ".github")
+            workflow = root / ".github/workflows/ci.yml"
+            workflow.write_text(workflow.read_text().replace(
+                "needs: [regression]", "needs: []"))
+            with self.assertRaisesRegex(ValueError, "fail-closed"):
+                validate_branch_governance.validate(root)
+
     def test_work_budget_children_cannot_mint_parent_resources(self):
         now = [0.0]
         root = WorkBudget(

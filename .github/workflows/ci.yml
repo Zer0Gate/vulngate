@@ -11,8 +11,9 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 jobs:
-  test:
+  regression:
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
         python-version: ['3.10', '3.13']
@@ -74,6 +75,17 @@ jobs:
         run: |
           shellcheck -S error install.sh scripts/run_pipeline.sh scripts/smoke_test.sh \
             macos/run-audit.sh macos/macos-app-recon.sh macos/bin/app2source.sh
+
+  test:
+    name: test
+    if: ${{ always() }}
+    needs: [regression]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every regression matrix leg to pass
+        env:
+          REGRESSION_RESULT: ${{ needs.regression.result }}
+        run: test "$REGRESSION_RESULT" = success
 
   security:
     runs-on: ubuntu-latest

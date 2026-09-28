@@ -50,6 +50,18 @@ def validate(root: Path) -> Dict[str, Any]:
     missing_jobs = sorted(set(checks) - job_ids)
     if missing_jobs:
         raise ValueError("required CI job(s) missing: %s" % ", ".join(missing_jobs))
+    # Matrix jobs get suffixed check names. Branch protection needs a stable
+    # aggregate that runs even when a dependency fails or is cancelled.
+    test_job = re.search(r"^  test:\n(.*?)(?=^  \w[\w-]*:|\Z)",
+                         workflow, re.MULTILINE | re.DOTALL)
+    body = test_job.group(1) if test_job else ""
+    required_gate = (
+        "name: test", "if: ${{ always() }}", "needs: [regression]",
+        "REGRESSION_RESULT: ${{ needs.regression.result }}",
+        'run: test "$REGRESSION_RESULT" = success',
+    )
+    if "matrix:" in body or any(item not in body for item in required_gate):
+        raise ValueError("test must be a stable fail-closed regression aggregate")
 
     codeowners = (root / ".github" / "CODEOWNERS").read_text(encoding="utf-8")
     if not re.search(r"^/scripts/agent/sandbox/\s+@", codeowners, re.MULTILINE):

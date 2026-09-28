@@ -4,7 +4,10 @@
 `docs/KNOWN-LIMITATIONS.md` 配合使用：后者只描述仍成立的限制，本文件描述
 整改闭环和尚未完成的架构项。
 
-## 本轮已闭环
+## 已实现内容（不等同于已发布或完整安全验收）
+
+以下是 `cb86800` 中已有实现。后续验收、合并、发布和安装状态以
+`REMEDIATION-PLAN.md` 为准；测试数量不构成整体安全保障证明。
 
 - [x] `audit-exec` 支持文档约定的 `target options -- argv` 和 `options target -- argv`
       两种写法；`argparse.REMAINDER` 不再吞掉必需参数。
@@ -54,7 +57,8 @@
 
 - 具体目标仍需声明其 `jvm-protocol` JSON snapshot 和 allowlisted paths；未声明观测
   scope 的协议类别保持 `pending`，不能自动确认。
-- GitHub branch protection/ruleset 的远端启用与 readback 仍需在仓库设置侧完成；代码仓库
-  已提供 CI/security/release checks，但不能从本地 checkout 推断远端 required checks。
-  本次只读核验结果：`main` 当前返回 `Branch not protected`，仓库 rulesets 为空；启用
-  规则前仍需仓库管理员确认 required check 名称和合并策略。
+- GitHub `main` 分支保护已启用并经 API readback 验证（2026-09-29）：要求
+  `test`/`security`、一个审批、CODEOWNERS 审核和管理员执行，禁止强推及删除。
+  矩阵结果使用固定名 `test` 汇总门禁；仍需最新 PR 的远端运行结果证明匹配。
+- 重试预算、缓存身份、原始输出持久化、隔离生命周期及 observer 来源边界
+  尚未完成后续验收；详情与依赖见 `REMEDIATION-PLAN.md`。
