@@ -16,7 +16,7 @@ from typing import Any, Callable, Dict, Mapping, Optional
 
 RESOURCE_NAMES = (
     "scan_bytes", "scan_files", "process_slots", "llm_calls",
-    "candidate_slots", "memory_bytes",
+    "candidate_slots", "memory_bytes", "llm_tokens",
 )
 
 
@@ -31,6 +31,7 @@ class BudgetLimits:
     scan_files: Optional[int] = None
     process_slots: Optional[int] = None
     llm_calls: Optional[int] = None
+    llm_tokens: Optional[int] = None
     candidate_slots: Optional[int] = None
     memory_bytes: Optional[int] = None
 
@@ -41,6 +42,7 @@ class BudgetLimits:
             "scan_files": self.scan_files,
             "process_slots": self.process_slots,
             "llm_calls": self.llm_calls,
+            "llm_tokens": self.llm_tokens,
             "candidate_slots": self.candidate_slots,
             "memory_bytes": self.memory_bytes,
         }
@@ -62,6 +64,7 @@ class WorkBudget:
                  scan_files: Optional[int] = None,
                  process_slots: Optional[int] = None,
                  llm_calls: Optional[int] = None,
+                 llm_tokens: Optional[int] = None,
                  candidate_slots: Optional[int] = None,
                  memory_bytes: Optional[int] = None,
                  name: str = "root", parent: Optional["WorkBudget"] = None,
@@ -71,13 +74,15 @@ class WorkBudget:
         self.name = str(name or "budget")[:120]
         self.parent = parent
         self._clock = clock
-        self._lock = threading.RLock()
+        # A tree shares one lock: check and charge all ancestors atomically.
+        self._lock = parent._lock if parent is not None else threading.RLock()
         self._limits = BudgetLimits(
             wall_seconds=None if wall_seconds is None else float(wall_seconds),
             scan_bytes=_counter(scan_bytes, "scan_bytes"),
             scan_files=_counter(scan_files, "scan_files"),
             process_slots=_counter(process_slots, "process_slots"),
             llm_calls=_counter(llm_calls, "llm_calls"),
+            llm_tokens=_counter(llm_tokens, "llm_tokens"),
             candidate_slots=_counter(candidate_slots, "candidate_slots"),
             memory_bytes=_counter(memory_bytes, "memory_bytes"),
         )
@@ -128,17 +133,34 @@ class WorkBudget:
         return remaining is None or remaining >= amount
 
     def consume(self, resource: str, amount: int = 1) -> None:
-        resource = str(resource)
-        if resource == "wall_seconds":
-            raise ValueError("wall_seconds is elapsed, not a consumable counter")
-        if not self.available(resource, amount):
-            raise WorkBudgetExceeded(
-                "%s budget exhausted for %s (requested=%s remaining=%s)" %
-                (self.name, resource, amount, self.remaining(resource)))
-        if self.parent is not None:
-            self.parent.consume(resource, amount)
+        self.consume_many({str(resource): amount})
+
+    def consume_many(self, amounts: Mapping[str, int]) -> None:
+        """Reserve an indivisible set of resources across the whole tree."""
         with self._lock:
-            self._used[resource] += amount
+            self.check()
+            for resource, amount in amounts.items():
+                if resource not in RESOURCE_NAMES:
+                    raise ValueError("unknown consumable resource: %s" % resource)
+                if not self.available(resource, amount):
+                    raise WorkBudgetExceeded(
+                        "%s budget exhausted for %s" % (self.name, resource))
+            node: Optional[WorkBudget] = self
+            while node is not None:
+                for resource, amount in amounts.items():
+                    node._used[resource] += amount
+                node = node.parent
+
+    def release_llm_tokens(self, amount: int) -> None:
+        """Settle unused tokens only; network attempts are never refunded."""
+        _counter(amount, "llm_tokens")
+        with self._lock:
+            if amount > self._used["llm_tokens"]:
+                raise ValueError("cannot refund more than reserved tokens")
+            node: Optional[WorkBudget] = self
+            while node is not None:
+                node._used["llm_tokens"] -= amount
+                node = node.parent
 
     def acquire_candidate(self) -> None:
         self.consume("candidate_slots", 1)

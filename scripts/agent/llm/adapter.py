@@ -11,9 +11,19 @@ import json
 import os
 import re
 import time
+import math
+import threading
 import urllib.error
 import urllib.request
 from typing import Any, Callable, Dict, List, Optional
+
+from ..orchestrator.work_budget import WorkBudgetExceeded
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        # A redirect would send an unreserved request (and possibly credentials).
+        return None
 
 
 class BudgetExceeded(Exception):
@@ -26,15 +36,21 @@ class LLMUsage:
         self.prompt_tokens = 0
         self.completion_tokens = 0
         self.total_tokens = 0
-        self.estimated_usd = 0.0
+        self.estimated_usd: Optional[float] = None
+        self.reserved_tokens = 0
+        self.unknown_usage_calls = 0
 
     def to_dict(self) -> Dict[str, Any]:
+        cost = None if self.unknown_usage_calls else self.estimated_usd
         return {
             "calls": self.calls,
             "prompt_tokens": self.prompt_tokens,
             "completion_tokens": self.completion_tokens,
             "total_tokens": self.total_tokens,
-            "estimated_usd": round(self.estimated_usd, 4),
+            "estimated_usd": None if cost is None else round(cost, 6),
+            "cost_status": "unknown" if cost is None else "estimated",
+            "reserved_tokens": self.reserved_tokens,
+            "unknown_usage_calls": self.unknown_usage_calls,
         }
 
 
@@ -45,7 +61,8 @@ class LLMClient:
                  api_key: Optional[str] = None, max_calls: int = 40,
                  max_tokens_total: int = 300_000, timeout: int = 180,
                  reasoning_effort: Optional[str] = None,
-                 json_model: Optional[str] = None):
+                 json_model: Optional[str] = None,
+                 pricing_registry: Optional[Dict[str, Dict[str, float]]] = None):
         self.model = model or os.environ.get("LLM_MODEL") or "deepseek-v4-flash"
         # JSON-output tasks (candidate proposal / audit / novelty verdict) go
         # through the DeepSeek Responses API with natively controlled
@@ -68,6 +85,13 @@ class LLMClient:
         self.usage = LLMUsage()
         self._timeout_provider: Optional[Callable[[], Optional[float]]] = None
         self._work_budget: Optional[Any] = None
+        self._budget_lock = threading.RLock()
+        self._budget_invalid = False
+        self._cost_unknown = False
+        # Operator-supplied prices keyed by exact base URL + model. No guessed
+        # or hard-coded provider price is presented as an actual invoice.
+        self._pricing_registry = pricing_registry or {}
+        self._opener = urllib.request.build_opener(_NoRedirect())
 
     def set_work_budget(self, budget: Optional[Any]) -> None:
         """Attach the caller-owned shared budget; never creates one here."""
@@ -102,6 +126,71 @@ class LLMClient:
         return min(requested, max(0.0, remaining - 0.25))
 
     # -- internals ---------------------------------------------------------
+    def _reserve_request(self, payload: Dict[str, Any], body: bytes):
+        output = payload.get("max_output_tokens", payload.get("max_tokens"))
+        if isinstance(output, bool) or not isinstance(output, int) or output < 1:
+            raise ValueError("a positive output token limit is required")
+        # Conservative byte-based input allowance, including serialized framing.
+        # This is a reservation, not a tokenizer measurement. Unexpected provider
+        # usage invalidates this client instead of silently extending the budget.
+        reserved = len(body) + 1024 + output
+        with self._budget_lock:
+            self._check_budget(reserved)
+            parent = self._work_budget
+            if parent is not None:
+                try:
+                    parent.consume_many({"llm_calls": 1, "llm_tokens": reserved})
+                except WorkBudgetExceeded as exc:
+                    raise BudgetExceeded(str(exc)) from exc
+            self.usage.calls += 1
+            self.usage.reserved_tokens += reserved
+            self.usage.unknown_usage_calls += 1
+            # Return the original parent: changing rounds during an outstanding
+            # request must not settle its reservation against the new round.
+            return reserved, parent
+
+    def _settle_request(self, data: Any, reservation, model: str) -> None:
+        reserved, parent = reservation
+        usage = data.get("usage") if isinstance(data, dict) else None
+        with self._budget_lock:
+            if not isinstance(usage, dict):
+                self._cost_unknown = True
+                self.usage.estimated_usd = None
+                return
+            prompt = usage.get("prompt_tokens", usage.get("input_tokens"))
+            completion = usage.get("completion_tokens", usage.get("output_tokens"))
+            total = usage.get("total_tokens")
+            if total is None and all(type(v) is int for v in (prompt, completion)):
+                total = prompt + completion
+            if (any(type(v) is not int or v < 0 for v in (prompt, completion, total))
+                    or total < prompt + completion):
+                self._cost_unknown = True
+                self.usage.estimated_usd = None
+                return  # Unknown billing keeps the whole reservation charged.
+            self.usage.reserved_tokens -= reserved
+            self.usage.unknown_usage_calls -= 1
+            self.usage.prompt_tokens += prompt
+            self.usage.completion_tokens += completion
+            self.usage.total_tokens += total
+            if total > reserved:
+                self._budget_invalid = True
+                self._cost_unknown = True
+                self.usage.estimated_usd = None
+                raise BudgetExceeded("provider usage exceeded token reservation")
+            if parent is not None:
+                parent.release_llm_tokens(reserved - total)
+            rates = self._pricing_registry.get(self.base_url + model, {})
+            values = [rates.get("input_per_million"), rates.get("output_per_million")]
+            if (self._cost_unknown or self.usage.unknown_usage_calls
+                    or total != prompt + completion
+                    or any(isinstance(v, bool) or not isinstance(v, (int, float))
+                           or not math.isfinite(v) or v < 0 for v in values)):
+                self._cost_unknown = True
+                self.usage.estimated_usd = None
+            else:
+                self.usage.estimated_usd = (self.usage.estimated_usd or 0.0) + (
+                    prompt * values[0] + completion * values[1]) / 1_000_000
+
     def _post(self, payload: Dict[str, Any], endpoint: str = "chat/completions") -> Dict[str, Any]:
         body = json.dumps(payload).encode("utf-8")
         req = urllib.request.Request(
@@ -110,18 +199,21 @@ class LLMClient:
                      "Authorization": "Bearer " + self.api_key})
         last: Optional[Exception] = None
         for attempt in range(3):
+            timeout = self._request_timeout()
+            reservation = self._reserve_request(payload, body)
             try:
-                if self._work_budget is not None:
-                    self._work_budget.record_llm_call()
-                with urllib.request.urlopen(req, timeout=self._request_timeout()) as resp:
+                with self._opener.open(req, timeout=timeout) as resp:
                     response_body = resp.read()
+                data = json.loads(response_body.decode("utf-8"))
+                self._settle_request(data, reservation, str(payload.get("model", "")))
                 remaining = self._remaining_timeout_budget()
                 if remaining is not None and remaining < 1.0:
                     raise BudgetExceeded(
                         "audit round deadline expired while awaiting LLM response")
-                return json.loads(response_body.decode("utf-8"))
+                return data
             except urllib.error.HTTPError as exc:
                 last = exc
+                exc.close()
                 if exc.code in (429, 500, 502, 503, 504) and attempt < 2:
                     delay = self._retry_delay(2 * (attempt + 1))
                     if delay:
@@ -172,21 +264,18 @@ class LLMClient:
             "max_output_tokens": max_output_tokens,
         }
         data = self._post(payload, endpoint="responses")
-        usage = data.get("usage") or {}
-        self.usage.calls += 1
-        self.usage.prompt_tokens += int(usage.get("input_tokens") or 0)
-        self.usage.completion_tokens += int(usage.get("output_tokens") or 0)
-        self.usage.total_tokens += int(usage.get("total_tokens") or 0)
-        self.usage.estimated_usd += 0.0002 * (int(usage.get("total_tokens") or 0) / 1000)
         return self._response_text(data)
 
     def _check_budget(self, max_tokens: int) -> None:
+        if self._budget_invalid:
+            raise BudgetExceeded("provider token accounting invalidated this budget")
         if self.usage.calls >= self.max_calls:
             raise BudgetExceeded("LLM call budget exhausted (max_calls=%d)" % self.max_calls)
-        if self.usage.total_tokens + max_tokens > self.max_tokens_total:
+        used = self.usage.total_tokens + self.usage.reserved_tokens
+        if used + max_tokens > self.max_tokens_total:
             raise BudgetExceeded(
                 "LLM token budget exhausted (%d + %d > %d)"
-                % (self.usage.total_tokens, max_tokens, self.max_tokens_total))
+                % (used, max_tokens, self.max_tokens_total))
 
     # -- public -------------------------------------------------------------
     def chat(self, messages: List[Dict[str, str]], max_tokens: int = 4000,
@@ -209,16 +298,10 @@ class LLMClient:
             data = self._post(payload)
             choice = (data.get("choices") or [{}])[0]
             content = choice.get("message", {}).get("content") or ""
-            finish = choice.get("finish_reason")
-            usage = data.get("usage") or {}
-            self.usage.calls += 1
-            self.usage.prompt_tokens += int(usage.get("prompt_tokens") or 0)
-            self.usage.completion_tokens += int(usage.get("completion_tokens") or 0)
-            self.usage.total_tokens += int(usage.get("total_tokens") or 0)
-            self.usage.estimated_usd += 0.0002 * (int(usage.get("total_tokens") or 0) / 1000)
             if content.strip():
                 return content
-            time.sleep(1.5)
+            if attempt < 2:
+                time.sleep(self._retry_delay(1.5))
         return ""
 
     @staticmethod

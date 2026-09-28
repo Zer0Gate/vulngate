@@ -11,7 +11,7 @@
 | --- | --- | --- |
 | R01 | 新 PR；稳定 test/security 门禁；矩阵失败/取消/跳过阻断；审核合并 | implemented：test 汇总门禁；远端待运行 |
 | R02 | 服务与 PoC 统一隔离生命周期；启动前限制；容器/cgroup 清理；真实环境压力与失败测试 | planned |
-| R03 | 每次请求预留调用/token；网络与空响应 retry；并发；未知计费；deadline；成本 unknown | planned |
+| R03 | 每次请求预留调用/token；网络与空响应 retry；并发；未知计费；deadline；成本 unknown | validated-local：12 项专项、731 项全量（Python 3.13）；Ruff/mypy/compileall 通过；远端矩阵待通过 |
 | R04 | 安装事务、故障恢复、并发；不可变工具快照；旧线程不静默混版 | planned |
 | R05 | 普通证据安全序列化；raw vault 默认关、权限与期限；错误路径敏感信息测试 | planned |
 | R06 | Run Manifest；树/配置/目标/镜像/policy 身份绑定；续跑漂移拒绝 | planned |
@@ -37,3 +37,15 @@ M3：R09 可信发布；R10/R11/R12 小 PR 持续推进。
 
 固定 fixture 的冷/热 p50/p95、RSS、磁盘占用和清理时延；实际环境建立基线后确定
 性能门槛。安全关键反例要求零误判，环境缺失必须明确 pending/unsupported。
+
+## 远端交付记录
+
+- PR #8：`https://github.com/Zer0Gate/vulngate/pull/8`，草稿，尚未合并/发布。
+- `1d5f4fa` 的 CI run `36484103241`：Linux 3.10/3.13、macOS 3.13 和
+  security job 通过；macOS 3.10 因 POSIX address-space preflight 被系统拒绝失败，
+  固定名 test 汇总按预期失败。此结果证明汇总对真实失败关闭，但不证明全部矩阵通过。
+- 同一 run 的 CodeQL 附加检查报告六条告警：common.py 两处产物写入、runtime.py
+  日志输出、ledger.py 写入、http_observer.py TLS 版本及转发地址。纳入 R05/R08，
+  需按来源和实际边界核验修复，不抑制告警以代替整改。
+- 本地默认 python3 已变为 3.14，未装 Hypothesis；完整验收使用依赖齐全的
+  `/opt/local/bin/python3`（3.13），不把环境缺包记成通过或代码失败。

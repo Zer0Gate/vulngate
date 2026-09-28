@@ -122,7 +122,8 @@ def run_round(ctx: StageContext, force: bool = False, only: Optional[str] = None
         scan_files=500_000, scan_bytes=4 * 1024 * 1024 * 1024,
         process_slots=128, candidate_slots=candidate_slots,
         llm_calls=(getattr(ctx.llm, "max_calls", None)
-                   if ctx.llm is not None else None))
+                   if ctx.llm is not None else None),
+        llm_tokens=getattr(ctx.llm, "max_tokens_total", None))
     if ctx.llm is not None and hasattr(ctx.llm, "set_work_budget"):
         ctx.llm.set_work_budget(ctx.work_budget)
     try:

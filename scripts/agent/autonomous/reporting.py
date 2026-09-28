@@ -58,7 +58,8 @@ def run_round(ctx: AutoCtx, round_no: int) -> Dict[str, Any]:
         name="autonomous-round", wall_seconds=remaining_seconds,
         scan_files=500_000, scan_bytes=4 * 1024 * 1024 * 1024,
         process_slots=128, candidate_slots=max(1, int(ctx.max_candidates)),
-        llm_calls=max(1, int(getattr(ctx.llm, "max_calls", 40))))
+        llm_calls=max(0, int(getattr(ctx.llm, "max_calls", 40))),
+        llm_tokens=getattr(ctx.llm, "max_tokens_total", None))
     set_work_budget = getattr(ctx.llm, "set_work_budget", None)
     if callable(set_work_budget):
         set_work_budget(ctx.work_budget)
@@ -1557,4 +1558,3 @@ def main(argv: Optional[List[str]] = None) -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
-
