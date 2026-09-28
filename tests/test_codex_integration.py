@@ -101,6 +101,50 @@ class NativeLauncherTests(unittest.TestCase):
 
 
 class CodexInstallerTests(unittest.TestCase):
+    def test_enable_failure_restores_previous_tree(self):
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            dest = base / 'plugins/vulngate'
+            dest.mkdir(parents=True)
+            (dest / 'previous.txt').write_text('original generation')
+            codex = base / 'codex'
+            codex.write_text('#!/bin/sh\nexit 19\n')
+            codex.chmod(0o700)
+            env = dict(os.environ, PLUGIN_HOME=str(base / 'plugins'),
+                       VULNGATE_MARKETPLACE=str(base / 'market/marketplace.json'),
+                       CODEX_BIN=str(codex))
+            result = subprocess.run(['bash', str(ROOT / 'install.sh')], env=env,
+                                    capture_output=True, text=True)
+            self.assertEqual(19, result.returncode, result.stdout + result.stderr)
+            self.assertEqual('original generation', (dest / 'previous.txt').read_text())
+            self.assertFalse((dest / 'scripts').exists())
+
+    def test_installer_does_not_alias_deleted_old_cache_to_new_content(self):
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            cache = base / 'codex-home/plugins/cache/personal/vulngate'
+            old = cache / 'old-version'
+            old.mkdir(parents=True)
+            (old / 'identity').write_text('old')
+            codex = base / 'codex'
+            codex.write_text(
+                '#!' + sys.executable + '\n'
+                'import json, os, pathlib, shutil\n'
+                'root = pathlib.Path(' + repr(str(cache)) + ')\n'
+                'manifest = pathlib.Path(os.environ["PLUGIN_HOME"]) / "vulngate/.codex-plugin/plugin.json"\n'
+                'version = json.loads(manifest.read_text())["version"]\n'
+                'shutil.rmtree(root / "old-version")\n'
+                '(root / version).mkdir()\n')
+            codex.chmod(0o700)
+            env = dict(os.environ, PLUGIN_HOME=str(base / 'plugins'),
+                       VULNGATE_MARKETPLACE=str(base / 'market/marketplace.json'),
+                       CODEX_HOME=str(base / 'codex-home'), CODEX_BIN=str(codex))
+            result = subprocess.run(['bash', str(ROOT / 'install.sh')], env=env,
+                                    capture_output=True, text=True)
+            self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+            self.assertFalse(old.exists())
+            self.assertFalse(old.is_symlink())
+
     def test_install_and_update_ship_only_plugin_payload(self):
         with tempfile.TemporaryDirectory() as td:
             base = Path(td)

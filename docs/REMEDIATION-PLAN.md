@@ -12,7 +12,7 @@
 | R01 | 新 PR；稳定 test/security 门禁；矩阵失败/取消/跳过阻断；审核合并 | implemented：test 汇总门禁；远端待运行 |
 | R02 | 服务与 PoC 统一隔离生命周期；启动前限制；容器/cgroup 清理；真实环境压力与失败测试 | planned |
 | R03 | 每次请求预留调用/token；网络与空响应 retry；并发；未知计费；deadline；成本 unknown | validated-local：12 项专项、731 项全量（Python 3.13）；Ruff/mypy/compileall 通过；远端矩阵待通过 |
-| R04 | 安装事务、故障恢复、并发；不可变工具快照；旧线程不静默混版 | planned |
+| R04 | 安装事务、故障恢复、并发；不可变工具快照；旧线程不静默混版 | partial：移除旧缓存 alias；修复启用前 EXIT trap 被覆盖；三项安装回归。并发锁、完整事务恢复及不可变快照仍待实现 |
 | R05 | 普通证据安全序列化；raw vault 默认关、权限与期限；错误路径敏感信息测试 | planned |
 | R06 | Run Manifest；树/配置/目标/镜像/policy 身份绑定；续跑漂移拒绝 | planned |
 | R07 | claim/observer/scope/predicate/controls；目标自写数据、无关 PID、截断不误确认或排除 | planned |
