@@ -15,6 +15,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from ..llm.adapter import BudgetExceeded, LLMClient
 from ..memory.ledger import render_finding_md, write_round_artifacts
+from ..memory.state import CheckpointStore
 from ..memory.research import (build_residual_closure_report,
                                 build_round_memory, load_research_memory,
                                 load_review_feedback, merge_research_memory,
@@ -228,14 +229,8 @@ class AutoCtx:
         return self._public_scan_cache
 
     def write_artifact(self, round_no: int, stage: str, name: str, data: Any) -> Path:
-        d = self.root / "state" / self.cfg.name / ("round-%02d" % round_no) / stage
-        d.mkdir(parents=True, exist_ok=True)
-        p = d / name
-        if isinstance(data, str):
-            p.write_text(data, encoding="utf-8")
-        else:
-            p.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
-        return p
+        return CheckpointStore(self.root, self.cfg.name, round_no).write_artifact(
+            stage, name, data)
 
     def jars_by_version(self) -> Dict[str, List[Path]]:
         return self.cfg.resolve_jars(self.root)
@@ -311,7 +306,6 @@ def _scope_block(ctx: "AutoCtx", limit: int = 4000) -> str:
         return ""
     return ("\n\n[目标项目安全边界 —— 官方 SECURITY 文档/范围规则，"
             "必须作为候选筛选与审计的硬约束]\n%s" % text[:limit])
-
 
 
 

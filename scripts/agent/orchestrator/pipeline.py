@@ -473,6 +473,8 @@ def _ledger_rows(ctx: StageContext, summaries: Dict[str, Any],
 
 
 def _evidence_lines(summary: Dict[str, Any]) -> list:
+    from ..memory.evidence_store import public_document
+    summary = public_document(summary)
     lines = []
     if summary.get("harness_error"):
         lines.append("HARNESS_ERROR=" + str(summary["harness_error"]))

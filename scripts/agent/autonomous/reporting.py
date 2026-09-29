@@ -1240,6 +1240,8 @@ def _evidence_text(row: Dict[str, Any]) -> str:
 
 
 def _evidence_lines(row: Dict[str, Any]) -> List[str]:
+    from ..memory.evidence_store import public_document
+    row = public_document(row)
     s = row.get("summary", {})
     lines = []
     if s.get("harness_error"):

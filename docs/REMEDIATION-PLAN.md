@@ -13,7 +13,7 @@
 | R02 | 服务与 PoC 统一隔离生命周期；启动前限制；容器/cgroup 清理；真实环境压力与失败测试 | planned |
 | R03 | 每次请求预留调用/token；网络与空响应 retry；并发；未知计费；deadline；成本 unknown | validated-local：12 项专项、731 项全量（Python 3.13）；Ruff/mypy/compileall 通过；远端矩阵待通过 |
 | R04 | 安装事务、故障恢复、并发；不可变工具快照；旧线程不静默混版 | validated-local：内容摘要版本目录、并发锁、持久化事务/恢复、启用后树校验；18 项专项和 748 项全量（Python 3.13）通过。远端矩阵、正式包实际激活及旧线程行为仍待验收；见 INSTALLATION.md |
-| R05 | 普通证据安全序列化；raw vault 默认关、权限与期限；错误路径敏感信息测试 | planned |
+| R05 | 普通证据安全序列化；raw vault 默认关、权限与期限；错误路径敏感信息测试 | partial：普通 JSON/矩阵/CLI/账本的共用投影与私有原子写入已实施，S4 policy v13；专项、全量与远端证据见下方交付记录；raw vault、留存期限、旧产物、剩余自由文本及真包验收未完成，见 EVIDENCE-STORAGE.md |
 | R06 | Run Manifest；树/配置/目标/镜像/policy 身份绑定；续跑漂移拒绝 | planned |
 | R07 | claim/observer/scope/predicate/controls；目标自写数据、无关 PID、截断不误确认或排除 | partial：HTTP 连接固定声明的数字 loopback、Host 由声明生成、TLS>=1.2 且校验 fixture 信任；异常连接清理。完整 observer 来源/归因/截断验收仍待完成 |
 | R08 | 真 backend CI；风险模块分项 branch coverage；F821；依赖审查；失败样本验证 | partial：恢复 F821 并修复四条诊断；真实 Ruff 负向测试阻断未定义变量；750 项本地全量通过。真实 backend/分项覆盖/依赖审查仍待完成 |
@@ -69,3 +69,9 @@ M3：R09 可信发布；R10/R11/R12 小 PR 持续推进。
 - HTTP observer 固定声明目标/Host、TLS 最低版本与 fixture 信任、异常清理：
   新增五项边界测试，包含真实 HTTPS fixture 的专项及本地全量 760 项通过
   （69.9s）。代码已待提交；CodeQL 需按新 HEAD 单独验收。
+- R05 普通持久化：增加结构化投影和私有原子写入，覆盖 Java/Shell matrix、
+  checkpoint、自治产物、账本与 CLI JSON；S4 policy v13。合成秘密、失败真值、
+  可信 HTTP 观测读回、回执、续跑、回放包的测试及 782 项全量通过（Python 3.13，
+  64.6s），Ruff/mypy 通过。独立审阅指出的异常正文和探针回复旁路已修复并回归；
+  staging 原始诊断须显式授权加 --show-raw-output。此项提交后仍须核对远端
+  macOS/Linux 矩阵与独立 CodeQL；raw vault 和剩余写入器未完成，不能关闭 R05。

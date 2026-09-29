@@ -3,32 +3,34 @@
 from __future__ import annotations
 
 import json
-import os
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+from .evidence_store import EvidenceStore
 
 
 class CheckpointStore:
     def __init__(self, workspace: Path, target: str, round_no: int):
         self.workspace = workspace.resolve()
+        self._input_workspace = workspace
+        self._store = EvidenceStore(workspace)
         self.target = target
         self.round_no = round_no
         self.base = workspace / "state" / target / ("round-%02d" % round_no)
-        self.base.mkdir(parents=True, exist_ok=True, mode=0o700)
-        try:
-            os.chmod(self.base, 0o700)
-        except OSError:
-            pass
+        self._store.directory(self.base.relative_to(workspace))
 
     def stage_file(self, stage: str) -> Path:
+        if not stage or "/" in stage or "\\" in stage or stage in {".", ".."}:
+            raise ValueError("stage must be one path component")
         return self.base / ("stage-%s.json" % stage)
 
     def load_stage(self, stage: str) -> Optional[Dict[str, Any]]:
         f = self.stage_file(stage)
-        if f.exists():
-            return json.loads(f.read_text(encoding="utf-8"))
-        return None
+        try:
+            return json.loads(self._store.read_text(f.relative_to(self._input_workspace)))
+        except FileNotFoundError:
+            return None
 
     def save_stage(self, stage: str, data: Dict[str, Any]) -> Path:
         data.setdefault("stage", stage)
@@ -44,12 +46,10 @@ class CheckpointStore:
         return stages
 
     def artifact_path(self, stage: str, name: str) -> Path:
+        self.stage_file(stage)
+        self._store._parts(name)
         d = self.base / stage
-        d.mkdir(parents=True, exist_ok=True, mode=0o700)
-        try:
-            os.chmod(d, 0o700)
-        except OSError:
-            pass
+        self._store.directory(d.relative_to(self._input_workspace))
         return d / name
 
     def write_artifact(self, stage: str, name: str, data: Any) -> Path:
@@ -60,49 +60,21 @@ class CheckpointStore:
             self._atomic_write(f, str(data))
         return f
 
-    @staticmethod
-    def _atomic_write_json(path: Path, data: Any) -> None:
-        """Stream compact JSON to avoid a second full-size in-memory copy."""
-        tmp = path.with_name(".%s.tmp.%d" % (path.name, os.getpid()))
-        with tmp.open("w", encoding="utf-8") as stream:
-            try:
-                os.chmod(tmp, 0o600)
-            except OSError:
-                pass
-            json.dump(data, stream, ensure_ascii=False, separators=(",", ":"))
-            stream.flush()
-            os.fsync(stream.fileno())
-        tmp.replace(path)
-        try:
-            os.chmod(path, 0o600)
-        except OSError:
-            pass
+    def _atomic_write_json(self, path: Path, data: Any) -> None:
+        self._store.write_json(path.relative_to(self._input_workspace), data)
 
-    @staticmethod
-    def _atomic_write(path: Path, content: str) -> None:
-        """Prevent a killed/concurrent stage from leaving truncated evidence."""
-        tmp = path.with_name(".%s.tmp.%d" % (path.name, os.getpid()))
-        with tmp.open("w", encoding="utf-8") as stream:
-            try:
-                os.chmod(tmp, 0o600)
-            except OSError:
-                pass
-            stream.write(content)
-            stream.flush()
-            os.fsync(stream.fileno())
-        tmp.replace(path)
-        try:
-            os.chmod(path, 0o600)
-        except OSError:
-            pass
+    def _atomic_write(self, path: Path, content: str) -> None:
+        self._store.write_text(path.relative_to(self._input_workspace), content)
 
     def read_artifact(self, stage: str, name: str) -> Any:
         f = self.artifact_path(stage, name)
-        if not f.exists():
+        try:
+            text = self._store.read_text(f.relative_to(self._input_workspace))
+        except FileNotFoundError:
             return None
         if f.suffix == ".json":
-            return json.loads(f.read_text(encoding="utf-8"))
-        return f.read_text(encoding="utf-8")
+            return json.loads(text)
+        return text
 
     def approval_log(self) -> Path:
         return self.base / "approval-log.jsonl"

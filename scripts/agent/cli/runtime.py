@@ -10,6 +10,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import Any, Dict, List
@@ -23,11 +24,23 @@ from agent.tools.build import (
     summarize_candidate,
 )
 from agent.tools.github_auth import github_token_source
+from agent.memory.evidence_store import public_json
 from agent.tools import source_evidence as se
 
 
 def _out(payload: Dict[str, Any]) -> None:
-    print(json.dumps(payload, indent=2, ensure_ascii=False))
+    print(public_json(payload))
+
+
+def _staging_raw_output(args: argparse.Namespace, stdout: str, stderr: str) -> None:
+    """Explicit operator-only diagnostic stream; never recorded as evidence."""
+    if not getattr(args, "authorized_staging", False) or not getattr(
+            args, "show_raw_output", False):
+        return
+    if stdout:
+        sys.stderr.write("[staging stdout; operator-requested raw output]\n" + stdout + "\n")
+    if stderr:
+        sys.stderr.write("[staging stderr; operator-requested raw output]\n" + stderr + "\n")
 
 
 def cmd_doctor(_args: argparse.Namespace) -> int:
@@ -360,6 +373,7 @@ def cmd_staging_exec(args: argparse.Namespace) -> int:
           "timeout_seconds": result.timeout_seconds,
           "timeout_capped": result.timeout_capped,
           "evidence_role": "environment-preparation-only"})
+    _staging_raw_output(args, result.stdout, result.stderr)
     return result.returncode if result.returncode >= 0 else 2
 
 
@@ -389,7 +403,6 @@ def cmd_staging_copy(args: argparse.Namespace) -> int:
           "timeout_seconds": result.timeout_seconds,
           "timeout_capped": result.timeout_capped,
           "evidence_role": "environment-preparation-only"})
+    _staging_raw_output(args, result.stdout, result.stderr)
     return result.returncode if result.returncode >= 0 else 2
-
-
 

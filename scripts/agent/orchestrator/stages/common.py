@@ -713,6 +713,8 @@ def _service_gap_row(spec: Any, cell: MatrixCell,
 
 
 def _evidence_from_summary(summary: Dict[str, Any], candidate: Dict[str, Any]) -> List[str]:
+    from ...memory.evidence_store import public_document
+    summary = public_document(summary)
     ev = []
     if summary.get("harness_error"):
         ev.append("HARNESS_ERROR=" + str(summary["harness_error"]))
@@ -778,5 +780,4 @@ def _precondition_distribution(rows: List[Dict[str, Any]]) -> str:
     c = Counter(r.get("precondition_tier", "?") for r in rows
                 if is_confirmed_conclusion(r.get("conclusion")))
     return ", ".join("%s=%d" % (k, v) for k, v in sorted(c.items()))
-
 

@@ -26,7 +26,8 @@ from agent.tools import source_evidence as se
 
 
 def _out(payload: Dict[str, Any]) -> None:
-    print(json.dumps(payload, indent=2, ensure_ascii=False))
+    from agent.memory.evidence_store import public_json
+    print(public_json(payload))
 
 
 def cmd_coverage(args: argparse.Namespace) -> int:

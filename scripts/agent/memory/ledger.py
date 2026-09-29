@@ -14,6 +14,7 @@ from typing import Any, Dict, List
 from ..tools.finding import normalize_finding
 from ..tools.redaction import redact_text
 from ..tools.conclusion import is_confirmed_conclusion
+from .evidence_store import EvidenceStore, public_document
 
 
 L10N = {
@@ -113,6 +114,7 @@ def _fmt_evidence(row: Dict) -> str:
 
 def render_ledger_md(rows: List[Dict], round_no: int, target: str,
                      header_note: str = "", lang: str = "zh") -> str:
+    rows = public_document(rows)
     t = _t(lang)
     lines = [
         t["ledger_title"] % (round_no, target),
@@ -170,6 +172,7 @@ def render_ledger_md(rows: List[Dict], round_no: int, target: str,
 
 def render_exclusions_md(excluded: List[Dict], round_no: int, target: str,
                          lang: str = "zh") -> str:
+    excluded = public_document(excluded)
     t = _t(lang)
     lines = [
         t["excl_title"] % (round_no, target),
@@ -190,6 +193,8 @@ def render_exclusions_md(excluded: List[Dict], round_no: int, target: str,
 def render_round_summary_md(round_no: int, target: str, confirmed: List[Dict],
                             excluded: List[Dict], metrics: Dict[str, Any],
                             next_round: List[str], lang: str = "zh") -> str:
+    confirmed, excluded, metrics, next_round = public_document(
+        [confirmed, excluded, metrics, next_round])
     t = _t(lang)
     lines = [t["sum_title"] % (round_no, target), "", t["confirmed"], ""]
     if confirmed:
@@ -217,7 +222,7 @@ def render_round_summary_md(round_no: int, target: str, confirmed: List[Dict],
 def render_finding_md(finding: Dict, lang: str = "zh") -> str:
     """Self-contained submission body (no external links) + boundary + timeline."""
     t = _t(lang)
-    finding = normalize_finding(finding)
+    finding = normalize_finding(public_document(finding))
     lines = [
         t["finding_title"] % finding.get("title", ""),
         "",
@@ -308,20 +313,19 @@ def write_round_artifacts(workspace: Path, target: str, round_no: int,
                           rows: List[Dict], excluded: List[Dict],
                           summary: Dict[str, Any], lang: str = "zh") -> Path:
     out = workspace / "ledger" / target / ("round-%02d" % round_no)
-    out.mkdir(parents=True, exist_ok=True)
+    store = EvidenceStore(workspace)
+    relative = out.relative_to(workspace)
     t = _t(lang)
     md = render_ledger_md(rows, round_no, target, summary.get("header_note", ""), lang)
-    (out / (t["ledger_file"] % round_no)).write_text(md, encoding="utf-8")
-    (out / (t["excl_file"] % round_no)).write_text(
-        render_exclusions_md(excluded, round_no, target, lang), encoding="utf-8")
-    (out / (t["sum_file"] % round_no)).write_text(
+    store.write_text(relative / (t["ledger_file"] % round_no), md)
+    store.write_text(relative / (t["excl_file"] % round_no),
+        render_exclusions_md(excluded, round_no, target, lang))
+    store.write_text(relative / (t["sum_file"] % round_no),
         render_round_summary_md(round_no, target,
                                 [r for r in rows if is_confirmed_conclusion(r.get("conclusion"))],
                                 excluded, summary.get("metrics", {}),
-                                summary.get("next_round", []), lang),
-        encoding="utf-8")
-    (out / "ledger.json").write_text(
-        json.dumps({"round": round_no, "target": target, "rows": rows,
-                    "excluded": excluded, "summary": summary},
-                   indent=2, ensure_ascii=False), encoding="utf-8")
+                                summary.get("next_round", []), lang))
+    store.write_json(relative / "ledger.json",
+                     {"round": round_no, "target": target, "rows": rows,
+                      "excluded": excluded, "summary": summary})
     return out

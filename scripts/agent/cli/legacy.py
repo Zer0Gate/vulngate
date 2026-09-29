@@ -94,7 +94,8 @@ from agent.cli.audit import normalize_audit_exec_argv  # noqa: E402
 
 
 def _out(payload: Dict[str, Any]) -> None:
-    print(json.dumps(payload, indent=2, ensure_ascii=False))
+    from agent.memory.evidence_store import public_json
+    print(public_json(payload))
 
 
 from agent.cli.runtime import (
@@ -298,6 +299,8 @@ def build_parser() -> argparse.ArgumentParser:
     common_staging.add_argument("--target", required=True)
     common_staging.add_argument("--round", type=int, required=True)
     common_staging.add_argument("--authorized-staging", action="store_true")
+    common_staging.add_argument("--show-raw-output", action="store_true",
+                                help="print authorized staging output to stderr for diagnosis")
     common_staging.add_argument("--host", required=True)
     common_staging.add_argument("--user", required=True)
     common_staging.add_argument("--port", type=int, default=22)

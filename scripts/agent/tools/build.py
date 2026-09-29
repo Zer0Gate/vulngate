@@ -25,6 +25,7 @@ from typing import Any, Dict, List, Optional
 from urllib.parse import urlsplit
 
 from ..sandbox.approval import ApprovalGate
+from ..memory.evidence_store import EvidenceStore, public_document
 from ..sandbox.http_observer import LoopbackHTTPObserver, OBSERVER_VERSION
 from ..sandbox.effects import (EFFECT_SCHEMA_VERSION, HTTPSemanticCollector,
                                 collector_for)
@@ -1417,7 +1418,8 @@ class JavaMatrixRunner:
                         "required_runtime": cell.required_runtime,
                         "authz": normalize_authz_case(next(
                             (c.authz for c in group if c is cell), {})),
-                        "compile_error": (compiled.stderr or compiled.stdout)[-2000:],
+                        "compile_error": (compiled.stderr or compiled.stdout
+                                          or "compiler exited without diagnostics")[-2000:],
                         "compile_timed_out": compiled.timed_out,
                         "compile_duration_ms": compiled.duration_ms,
                         "compile_timeout_seconds": compiled.timeout_seconds,
@@ -1457,10 +1459,8 @@ class JavaMatrixRunner:
             "state/%s/round-%02d/S4/matrix-runs/%s" % (
                 self.target, self.round_no, candidate_id),
             "candidate matrix directory")
-        d.mkdir(parents=True, exist_ok=True)
-        tmp = d / ("cells.json.tmp.%d" % os.getpid())
-        tmp.write_text(json.dumps(cells, indent=2, ensure_ascii=False), encoding="utf-8")
-        tmp.replace(d / "cells.json")
+        EvidenceStore(self.workspace).write_json(
+            (d / "cells.json").relative_to(self.workspace), cells)
 
 
 @dataclass
@@ -2028,10 +2028,8 @@ class ShellMatrixRunner:
             "state/%s/round-%02d/S4/matrix-runs/%s" % (
                 self.target, self.round_no, candidate_id),
             "candidate matrix directory")
-        d.mkdir(parents=True, exist_ok=True)
-        tmp = d / ("cells.json.tmp.%d" % os.getpid())
-        tmp.write_text(json.dumps(cells, indent=2, ensure_ascii=False), encoding="utf-8")
-        tmp.replace(d / "cells.json")
+        EvidenceStore(self.workspace).write_json(
+            (d / "cells.json").relative_to(self.workspace), cells)
 
 
 _FALSY_MARKERS = ("", "true", "yes", "ok", "none", "null", "0", "false")
@@ -2339,10 +2337,9 @@ def converge_s4_cells(workspace: Path, target: str, round_no: int,
             continue
         sources.append(source)
         for cell in cells:
-            try:
-                key = json.dumps(cell, sort_keys=True, ensure_ascii=False)
-            except (TypeError, ValueError):
-                key = repr(cell)
+            # Diagnostics differ after persistence. Compare the same safe
+            # representation, retaining the first (live) cell for repair.
+            key = json.dumps(public_document(cell), sort_keys=True, ensure_ascii=False)
             if key not in seen:
                 seen.add(key)
                 merged.append(cell)

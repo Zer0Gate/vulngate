@@ -18,7 +18,8 @@ from agent.cli.analysis import _ensure_coverage_analysis
 
 
 def _out(payload: Dict[str, Any]) -> None:
-    print(json.dumps(payload, indent=2, ensure_ascii=False))
+    from agent.memory.evidence_store import public_json
+    print(public_json(payload))
 
 
 def cmd_differential(args: argparse.Namespace) -> int:
@@ -121,7 +122,8 @@ def cmd_spawn_probe(args: argparse.Namespace) -> int:
             "claim_status": "not-a-finding",
         }
         out = store.write_artifact("S4", "spawn-probe-challenge.json", payload)
-        _out({"written_to": str(out), "heartbeat_file": str(heartbeat),
+        _out({"schema_version": payload["schema_version"],
+              "written_to": str(out), "heartbeat_file": str(heartbeat),
               "token": token, "expected_reply": payload["expected_reply"],
               "claim_status": "not-a-finding"})
         return 0
@@ -257,7 +259,8 @@ def cmd_parallel_receipt(args: argparse.Namespace) -> int:
             "claim_status": "not-a-finding",
         }
         out = store.write_artifact("S4", challenge_name, payload)
-        _out({"written_to": str(out), "candidate_id": candidate,
+        _out({"schema_version": payload["schema_version"],
+              "written_to": str(out), "candidate_id": candidate,
               "token": token, "expected_artifact": expected_artifact,
               "claim_status": "not-a-finding"})
         return 0
@@ -406,6 +409,5 @@ def cmd_parallel_receipt(args: argparse.Namespace) -> int:
           "progress_count": progress_count,
           "artifact_count": len(all_artifacts), "claim_status": "not-a-finding"})
     return 0
-
 
 

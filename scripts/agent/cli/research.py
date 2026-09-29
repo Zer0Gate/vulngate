@@ -26,7 +26,8 @@ from agent.tools import source_evidence as se
 
 
 def _out(payload: Dict[str, Any]) -> None:
-    print(json.dumps(payload, indent=2, ensure_ascii=False))
+    from agent.memory.evidence_store import public_json
+    print(public_json(payload))
 
 
 def cmd_novelty(args: argparse.Namespace) -> int:
@@ -1027,6 +1028,5 @@ def cmd_research_budget(args: argparse.Namespace) -> int:
                 row.get("priority_delta", 0), row.get("cap_hint", 0),
                 row.get("yield_per_cost", 0)))
     return 0
-
 
 

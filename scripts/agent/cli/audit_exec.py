@@ -18,7 +18,8 @@ from typing import Any, Dict, Optional
 
 
 def _out(payload: Dict[str, Any]) -> None:
-    print(json.dumps(payload, indent=2, ensure_ascii=False))
+    from agent.memory.evidence_store import public_json
+    print(public_json(payload))
 
 
 def cmd_audit_exec(args: argparse.Namespace) -> int:
