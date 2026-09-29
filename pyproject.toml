@@ -29,7 +29,7 @@ extend-exclude = ["macos/bin", "scripts/agent/analysis/java_ast"]
 
 [tool.ruff.lint]
 select = ["E4", "E7", "E9", "F"]
-ignore = ["E402", "E501", "F401", "F402", "F821", "F841"]
+ignore = ["E402", "E501", "F401", "F402", "F841"]
 
 [tool.mypy]
 python_version = "3.10"

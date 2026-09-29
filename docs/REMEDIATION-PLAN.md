@@ -16,7 +16,7 @@
 | R05 | 普通证据安全序列化；raw vault 默认关、权限与期限；错误路径敏感信息测试 | planned |
 | R06 | Run Manifest；树/配置/目标/镜像/policy 身份绑定；续跑漂移拒绝 | planned |
 | R07 | claim/observer/scope/predicate/controls；目标自写数据、无关 PID、截断不误确认或排除 | planned |
-| R08 | 真 backend CI；风险模块分项 branch coverage；F821；依赖审查；失败样本验证 | planned |
+| R08 | 真 backend CI；风险模块分项 branch coverage；F821；依赖审查；失败样本验证 | partial：恢复 F821 并修复四条诊断；真实 Ruff 负向测试阻断未定义变量；750 项本地全量通过。真实 backend/分项覆盖/依赖审查仍待完成 |
 | R09 | 审核提交的不可变 tag；Release 归档/SBOM/checksum/provenance；干净安装 | planned |
 | R10 | 三入口共享应用服务；build 等按职责拆分；同 fixture 结论一致 | planned |
 | R11 | installed/probed/enforced 能力分层；语言/分析/observer/backend 矩阵；文案校准 | planned |
@@ -53,3 +53,8 @@ M3：R09 可信发布；R10/R11/R12 小 PR 持续推进。
   篡改、磁盘写入失败和错误缓存身份；748 项全量通过（66.2s），有既存 socket
   ResourceWarning，未将其隐去。测试使用临时目录和模拟 Codex，不代表生产插件
   已更新，也不证明真实断电/磁盘硬件的持久性。
+- 安装事务提交 `a8f39d4` 已推送，远端 run `36507119356` 正在验收。
+- F821 检查发现 build.py 残留未定义 `ev` 与两处类型导入缺失。移除任意自由
+  文本证据作为 residual 副作用的旧分支、修复导入；11 项专项及 750 项全量通过。
+  为 macOS 3.10 的 `ulimit -v` 失败增加 controller/native launcher 只读诊断；
+  暂不凭猜测改变限额或忽略失败。

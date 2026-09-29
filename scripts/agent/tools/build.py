@@ -2587,7 +2587,6 @@ def summarize_candidate(cells: List[Dict]) -> Dict:
                                                     ("canary", "simulat", "shape-only", "in-memory")))
                 or (lk and lk.lower() not in _FALSY_MARKERS)
                 or (truthy(obs.get("NETWORK")) and "://" in str(obs.get("NETWORK")))
-                or (ev and ev.lower() not in _FALSY_MARKERS)
                 or bool(assertion and assertion.get("boundary_violation")))
             contract = _declared_residual_contracts(c).get(residual_id, {})
             residual_falsifiers.append({

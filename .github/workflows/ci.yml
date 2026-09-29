@@ -36,6 +36,9 @@ jobs:
               sudo apt-get install -y -qq ripgrep
             fi
           fi
+      - name: Diagnose Darwin controller and launcher resource profiles
+        if: runner.os == 'macOS'
+        run: python3 scripts/diagnose_resource_limits.py
       - name: Regression tests and isolated Codex installer
         run: PYTHONPATH=scripts python3 -m unittest discover -s tests -t tests -v
       - name: Security decision branch coverage
@@ -67,7 +70,7 @@ jobs:
       - name: Ruff lint
         run: >-
           python -m ruff check scripts hooks tests
-          --select E4,E7,E9,F --ignore E402,F401,F402,F841,F821
+          --select E4,E7,E9,F --ignore E402,F401,F402,F841
       - name: Type check security decision modules
         run: python -m mypy
       - name: ShellCheck

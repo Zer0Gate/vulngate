@@ -22,7 +22,7 @@ import urllib.request
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from ..llm.adapter import BudgetExceeded
 from .github_auth import github_token_source, resolve_github_token
