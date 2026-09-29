@@ -21,7 +21,7 @@ from agent.tools.build import (
     POCSpec,
     ShellMatrixRunner,
     ShellPOCSpec,
-    summarize_candidate,
+    classify_s4_execution,
 )
 from agent.tools.github_auth import github_token_source
 from agent.memory.evidence_store import public_json
@@ -340,11 +340,24 @@ def cmd_matrix(args: argparse.Namespace) -> int:
             authorized_staging=args.authorized_staging, staging_hosts=staging_hosts,
             execution_budget=round_execution_budget)
         results = runner.run_manifest(specs, jars)
-    summary = {cid: summarize_candidate(cells) for cid, cells in results.items()}
+    # Terminal JSON is an operational receipt, not a second raw evidence sink.
+    # Full candidate summaries can contain arbitrary target-controlled marker
+    # text; expose only fixed execution-state names and integer counts here.
+    summary = {cid: classify_s4_execution(cells) for cid, cells in results.items()}
+    budget = runner.execution_budget.snapshot()
+    budget_receipt = {key: budget[key] for key in (
+        "round_timeout_seconds", "candidate_timeout_seconds",
+        "elapsed_seconds", "round_remaining_seconds", "round_exhausted",
+        "aborted", "candidates_started",
+    )}
+    budget_receipt["candidate_timeboxes_exhausted_count"] = len(
+        budget["candidate_timeboxes_exhausted"])
     _out({"target": args.target, "round": args.round,
           "lang": args.lang, "candidates": summary,
+          "summary_format": "execution-state-counts-v1",
+          "claim_status": "not-a-finding",
           "cells_written_to": str(runner.matrix_dir),
-          "s4_execution_budget": runner.execution_budget.snapshot()})
+          "s4_execution_budget": budget_receipt})
     return 0
 
 

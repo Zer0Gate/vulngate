@@ -13,7 +13,7 @@
 | R02 | 服务与 PoC 统一隔离生命周期；启动前限制；容器/cgroup 清理；真实环境压力与失败测试 | planned |
 | R03 | 每次请求预留调用/token；网络与空响应 retry；并发；未知计费；deadline；成本 unknown | validated-local：12 项专项、731 项全量（Python 3.13）；Ruff/mypy/compileall 通过；远端矩阵待通过 |
 | R04 | 安装事务、故障恢复、并发；不可变工具快照；旧线程不静默混版 | validated-local：内容摘要版本目录、并发锁、持久化事务/恢复、启用后树校验；18 项专项和 748 项全量（Python 3.13）通过。远端矩阵、正式包实际激活及旧线程行为仍待验收；见 INSTALLATION.md |
-| R05 | 普通证据安全序列化；raw vault 默认关、权限与期限；错误路径敏感信息测试 | partial：普通 JSON/矩阵/CLI/账本共用投影与私有原子写入已推送，S4 policy v13；raw vault 默认关、1–30 天独立期限、0700/0600、可选 Fernet、显式清理已在本地验证，待推送和远端验收。旧产物、剩余自由文本及真包验收未完成，见 EVIDENCE-STORAGE.md |
+| R05 | 普通证据安全序列化；raw vault 默认关、权限与期限；错误路径敏感信息测试 | partial：普通 JSON/矩阵/CLI/账本共用投影与私有原子写入已推送，S4 policy v13；raw vault 默认关、1–30 天独立期限、0700/0600、可选 Fernet、显式清理已推送且远端矩阵通过，CodeQL #7 未闭合。旧产物、剩余自由文本及真包验收未完成，见 EVIDENCE-STORAGE.md |
 | R06 | Run Manifest；树/配置/目标/镜像/policy 身份绑定；续跑漂移拒绝 | planned |
 | R07 | claim/observer/scope/predicate/controls；目标自写数据、无关 PID、截断不误确认或排除 | partial：HTTP 连接固定声明的数字 loopback、Host 由声明生成、TLS>=1.2 且校验 fixture 信任；异常连接清理。完整 observer 来源/归因/截断验收仍待完成 |
 | R08 | 真 backend CI；风险模块分项 branch coverage；F821；依赖审查；失败样本验证 | partial：恢复 F821 并修复四条诊断；真实 Ruff 负向测试阻断未定义变量；750 项本地全量通过。真实 backend/分项覆盖/依赖审查仍待完成 |
@@ -81,3 +81,8 @@ M3：R09 可信发布；R10/R11/R12 小 PR 持续推进。
   忽略告警代替整改。R05 raw vault 专项（含加密依赖实际安装）、最终 791 项
   全量（64.2s）、Ruff、mypy 已在后续本地改动上通过；新 HEAD 的远端
   矩阵和 CodeQL 尚未验收，不能计为远端通过。
+- `7f6a209` 的 run `36631429940`：security、四组 Linux/macOS 回归和
+  固定 `test` 汇总全绿；独立 CodeQL 仍有 #7。已在本地把 `matrix` CLI
+  改成固定执行状态/计数回执，不再把完整观测摘要送往通用 JSON 出口；
+  792 项本地全量（63.8s）、Ruff/mypy 通过；后续提交需以新 HEAD 验证
+  CodeQL 真正通过。

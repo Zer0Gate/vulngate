@@ -121,6 +121,40 @@ class ProjectionTests(unittest.TestCase):
         self.assertEqual("1", safe["instantiated"][0]["version"])
         self.assertEqual(safe, public_document(safe))
 
+    def test_matrix_cli_emits_only_typed_execution_receipt(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest = root / "manifest.json"
+            manifest.write_text(json.dumps({"specs": [{"candidate_id": "C1",
+                                                     "script": "echo ok",
+                                                     "cells": [{"version": "1"}]}]}))
+            args = SimpleNamespace(workspace=directory, target="demo", round=1,
+                                   manifest=str(manifest), lang="shell",
+                                   authorized_staging=False, staging_host=[])
+            terminal = io.StringIO()
+            with patch.object(runtime, "ShellMatrixRunner") as runner_type:
+                runner = runner_type.return_value
+                runner.run_manifest.return_value = {
+                    "C1": [cell(observations={"LEAKED": PRIVATE})]}
+                runner.matrix_dir = root / "state/demo/round-01/S4/matrix-runs"
+                runner.execution_budget.snapshot.return_value = {
+                    "round_timeout_seconds": 100, "candidate_timeout_seconds": 30,
+                    "elapsed_seconds": 2.0, "round_remaining_seconds": 98.0,
+                    "round_exhausted": False, "aborted": True,
+                    "abort_reason": PRIVATE, "candidates_started": 1,
+                    "candidate_timeboxes_exhausted": ["C1"],
+                }
+                with redirect_stdout(terminal):
+                    self.assertEqual(0, runtime.cmd_matrix(args))
+            receipt = json.loads(terminal.getvalue())
+            self.assertNotIn(PRIVATE, terminal.getvalue())
+            self.assertEqual("execution-state-counts-v1", receipt["summary_format"])
+            self.assertEqual("executed-no-effect", receipt["candidates"]["C1"]["execution_state"])
+            self.assertEqual(1, receipt["candidates"]["C1"]["executed_cell_count"])
+            self.assertEqual(1, receipt["s4_execution_budget"][
+                "candidate_timeboxes_exhausted_count"])
+            self.assertNotIn("abort_reason", receipt["s4_execution_budget"])
+
     def test_unstructured_exception_and_probe_reply_are_withheld(self):
         payload = {"status": "failed-unhandled-error", "error_type": "RuntimeError",
                    "error": PRIVATE, "runtime_lab": {

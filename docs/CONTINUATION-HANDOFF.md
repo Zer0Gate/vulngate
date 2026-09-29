@@ -12,8 +12,12 @@ run `36629640121` 的 security、四组 Linux/macOS 回归与固定 `test` 汇�
 1–30 天期限、过期拒读/范围清理、可选 Fernet 且配置/依赖/密钥失败不回退明文；
 新增 `raw-vault purge-expired` 操作入口及文档。隔离环境实际安装
 `cryptography==50.0.1` 后，含最终清理入口的 791 项全量（64.2s）、
-Ruff/mypy 通过。本增量提交/推送状态须以实时 Git 核对，远端矩阵与
-CodeQL 仍须按新 HEAD 验收。`docs/EVIDENCE-STORAGE.md`
+Ruff/mypy 通过。本增量已推送为 `7f6a2099fa4fafb1fbfdd6066744319b9ecd9fb4`；
+run `36631429940` 的 security、四组回归及 `test` 汇总全部成功，独立
+CodeQL 仍失败（#7）。现另有本地未提交补丁：`matrix` CLI 改为仅输出固定
+执行状态/计数与有界预算回执，不复制含原始 marker 的完整 summary；已有专项
+测试及 792 项全量（63.8s）、Ruff/mypy 通过，尚须提交推送和新 HEAD 的
+CodeQL 验收。`docs/EVIDENCE-STORAGE.md`
 说明 opt-in、权限、期限和清理限制。R05 仍为 partial；旧产物、自由文本、
 审批日志和其余写入器未完成。R01–R12 总体剩余范围见本文件尾部和
 `docs/REMEDIATION-PLAN.md`，不得因为本增量收缩目标。恢复时先查看最新
