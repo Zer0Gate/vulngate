@@ -1,5 +1,70 @@
 # VulnGate 整改续接记录（2026-09-29）
 
+## 最新交接：额度窗口 1790688162（优先于下方历史记录）
+
+本窗口已交接：`resetsAt=1790688162`。应用最新读数五小时已用 95%、剩余 5%，
+北京时间 2026-09-29 21:22:42 重置。自动提醒 id 为 `vulngate`，不要为此窗口
+重复生成相同交接。未使用重置券，完整目标仍未完成，未暂停或标记 blocked。
+
+### 已核实的当前状态
+
+- 功能 HEAD：`d9d6193da1efeb5ed030738e7a7a623b335be3b0`，本地与远端一致。
+- 分支 `Zer0Gate/vulngate-release-1.3.0`；交接前工作区干净。
+- 远端 main 仍为 `ea23f63c96b11cfc52754185418c4e67f2829eb5`。
+- PR #8 OPEN、草稿、未合并。本批修复未发布新版、未刷新实际插件缓存。
+- 本轮没有编辑源码，没有运行中的测试/子代理；本次仅提交此交接文档。
+- `d9d6193` 的 run `36543313262` 已全部 workflow jobs SUCCESS：
+  Ubuntu 3.10/3.13、macOS 3.10/3.13、security、test。
+- 独立 CodeQL check `109324423984` 为 FAILURE；当前 PR open alerts 剩四条：
+  #2/#3 `autonomous/common.py:235/237` clear-text-storage；
+  #4 `memory/ledger.py:324` clear-text-storage；
+  #5 `cli/runtime.py:30` clear-text-logging。
+- HTTP SSRF/TLS 两条告警已不在当前 open 列表；完整 R07 仍未完成。
+- 已推送的新增提交：`6736d6e` Darwin 双基线，`d9d6193` HTTP 固定连接/TLS 信任。
+  最新本地 HTTP 专项 21 项、全量 760 项通过，Ruff/mypy 通过。
+  predicate 测试补 cleanup 后，最新全量不再出现此前 socket ResourceWarning。
+
+### 精确执行断点：R05 调查中，尚未开始补丁
+
+已检查的路径：
+
+1. `tools/build.py` Java/Shell payload 包含 raw stdout/stderr/cmd，编译失败包含
+   compile_error；两处 `_write_cells` 原始写入 cells.json，无统一安全序列化。
+2. `memory/state.py` CheckpointStore 直接写 JSON/text；chmod 失败被忽略，
+   临时名仅 pid，有同进程并发冲突风险。
+3. `autonomous/common.py` write_artifact 直接写 text/json；ledger 的 Markdown/JSON
+   和 cli/runtime._out 也需共享边界。redaction.py 只有正则，不是完整边界。
+4. `parse_poc_claims` 复制任意 marker；`_cell_poc_claims` 还读取旧 observations。
+   这些是非可信 claim，删 stdout 不足以消除敏感副本。
+
+下一步：先完成边界和兼容性调查，再实现统一安全投影/私有原子写入及回归。
+普通证据不能依赖正则识别任意隐私；raw vault 默认关闭，权限、期限、可选加密
+不能是假实现或缺依赖时回退明文。compile_error/harness_error 不能脱敏成空值
+而丢失失败语义；不要改坏 trusted observation/effect digest 或 provenance，
+需要持久化前后 replay 一致性测试及显式版本/迁移。不可信输出的 cmd、claims、
+异常文本副本也应纳入。使用唯一临时文件、0600/0700，权限失败不得静默忽略。
+
+本轮已完整阅读 `codex-security:fix-finding` 及 artifact-storage.md。已发现
+`multi_agent_v1__spawn_agent` 可用，但尚未启动：下一步按技能先派 fresh read-only
+boundary/compatibility investigator（fork_turns=none）；补丁后做一次独立
+bypass/regression review。源码/回归测试正常编辑，额外安全扫描证据走 managed
+artifact 工具；未创建新扫描或安全 artifact。
+
+恢复时先执行以下只读核对，再沿 R05 断点推进，不重做 Darwin/HTTP 修复：
+
+```sh
+git status --short --branch
+git log -10 --oneline
+gh pr view 8 --json headRefOid,isDraft,state,statusCheckRollup
+gh api 'repos/Zer0Gate/vulngate/code-scanning/alerts?state=open&ref=refs/pull/8/merge&per_page=100' --jq '.[]|{number,rule:.rule.id,path:.most_recent_instance.location.path,line:.most_recent_instance.location.start_line}'
+```
+
+完整 R01–R12 范围及验证命令见下文与 REMEDIATION-PLAN.md；不得以四条告警消失
+代替全目标完成。账本中待提交/旧 run 等描述需在下一次源码提交时按证据更新。
+本次只更新交接文档，未修改账本或源码。
+
+## 历史快照（以下旧 HEAD、旧失败与“下一步”不再代表当前状态）
+
 本文件用于额度恢复或会话切换后继续工作，不是整改完成声明。
 先核对实际 Git/CI 状态，再沿本文断点推进；不要从头重做已有提交。
 
