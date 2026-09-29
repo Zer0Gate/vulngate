@@ -3,6 +3,14 @@
 本文件用于额度恢复或会话切换后继续工作，不是整改完成声明。
 先核对实际 Git/CI 状态，再沿本文断点推进；不要从头重做已有提交。
 
+## 续接增量：Darwin 基线修复
+
+基于下文 CI 数据，runner 已改为测量 controller 和 native launcher 两个
+VM 基线，取较大者加原有 4 GiB 余量；任一测量失败仍拒绝执行。
+资源 policy 升为 v7，避免旧基线产物被当作新契约复用。46 项专项通过，
+远端 arm64/Python 3.10 验收尚待新提交 CI；不能提前宣称原失败已关闭。
+继续时先查询最新 HEAD/CI，不再重复下文已实施的“下一步”修补。
+
 ## 目标与授权
 
 完成 [REMEDIATION-PLAN.md](REMEDIATION-PLAN.md) 的全部 R01–R12；

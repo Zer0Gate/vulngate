@@ -58,3 +58,9 @@ M3：R09 可信发布；R10/R11/R12 小 PR 持续推进。
   文本证据作为 residual 副作用的旧分支、修复导入；11 项专项及 750 项全量通过。
   为 macOS 3.10 的 `ulimit -v` 失败增加 controller/native launcher 只读诊断；
   暂不凭猜测改变限额或忽略失败。
+- Run `36507376708` 已结束：Linux 3.10/3.13、macOS 3.13 成功；macOS 3.10
+  及 test 失败。诊断确认同为 arm64 时 bash VSZ（435299488 KiB）仍大于旧
+  controller 派生上限（425127772160 bytes）。已实施 controller/launcher 双基线
+  取最大值修复并将 resource policy 升为 v7；余量不变、测量失败仍关闭执行。
+  46 项专项、755 项全量（64.5s）、Ruff/mypy 通过，远端验收待新提交运行；
+  完整隔离 R02 尚未完成。

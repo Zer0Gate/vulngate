@@ -26,7 +26,7 @@ def main() -> None:
     }
     try:
         baseline = _address_space_baseline_bytes()
-        report["controller_baseline_bytes"] = baseline
+        report["effective_controller_launcher_baseline_bytes"] = baseline
         report["requested_address_space_bytes"] = _address_space_limit_bytes(baseline)
         # The final ':' keeps bash alive so ps measures bash, not an exec'd ps.
         launcher = subprocess.run(

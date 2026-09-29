@@ -161,7 +161,7 @@ class PolicyTests(unittest.TestCase):
                 result.resource_limits["address_space_baseline_bytes"],
                 4 * 1024 * 1024 * 1024)
             self.assertEqual(result.resource_limits["policy"],
-                             "posix-rlimit-as4g-headroom-cpu-fsize64m-nofile512-nproc128-core0-v6")
+                             "posix-rlimit-controller-launcher-as4g-headroom-cpu-fsize64m-nofile512-nproc128-core0-v7")
 
     def test_patch_history_extracts_fix_variants_read_only(self):
         with tempfile.TemporaryDirectory() as td:

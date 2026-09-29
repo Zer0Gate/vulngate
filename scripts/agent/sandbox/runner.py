@@ -46,7 +46,7 @@ class RunResult:
     process_tree_cleanup: Dict[str, Any] = field(default_factory=dict)
 
 
-POC_RESOURCE_POLICY_VERSION = "posix-rlimit-as4g-headroom-cpu-fsize64m-nofile512-nproc128-core0-v6"
+POC_RESOURCE_POLICY_VERSION = "posix-rlimit-controller-launcher-as4g-headroom-cpu-fsize64m-nofile512-nproc128-core0-v7"
 POC_MAX_FILE_BYTES = 64 * 1024 * 1024
 POC_MAX_OPEN_FILES = 512
 POC_MAX_PROCESS_SPAWN_DELTA = 128
@@ -115,26 +115,40 @@ def _user_process_limit() -> Tuple[int, int]:
 
 
 def _address_space_baseline_bytes() -> int:
-    """Measure the controller VM map that Darwin executables inherit."""
+    """Measure both Darwin controller and native launcher VM maps.
+
+    Exec can replace the VM layout: an older Python can map less shared-cache
+    address space than /bin/bash, even when both are arm64. Setting bash's AS
+    limit from Python's VSZ alone can therefore fail before the target starts.
+    This bounds virtual address space, not resident/process-tree memory.
+    """
     if sys.platform != "darwin":
         return 0
+    commands = (
+        ["/bin/ps", "-o", "vsz=", "-p", str(os.getpid())],
+        # Keep bash alive (no tail exec optimization) while ps measures it.
+        ["/bin/bash", "-c", 'set -e; /bin/ps -o vsz= -p "$$"; :'],
+    )
+    values = []
     try:
-        result = subprocess.run(
-            ["/bin/ps", "-o", "vsz=", "-p", str(os.getpid())],
-            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL, text=True, timeout=3, check=True)
-        value = int(result.stdout.strip()) * 1024
+        for command in commands:
+            result = subprocess.run(
+                command, env={"PATH": os.defpath},
+                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL, text=True, timeout=3, check=True)
+            value = int(result.stdout.strip()) * 1024
+            if value < 1 or value > 1024 * 1024 * 1024 * 1024:
+                raise ValueError("Darwin VM baseline is out of range")
+            values.append(value)
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
         raise PermissionError(
             "cannot determine Darwin address-space baseline: %s" %
             type(exc).__name__) from exc
-    if value < 1 or value > 1024 * 1024 * 1024 * 1024:
-        raise PermissionError("Darwin address-space baseline is out of range")
-    return value
+    return max(values)
 
 
 def _address_space_limit_bytes(baseline_bytes: int) -> int:
-    """Set a 4 GiB cap, measured from the inherited Darwin VM-map baseline."""
+    """Set a 4 GiB headroom cap above the measured VM-map baseline."""
     import resource
 
     if not hasattr(resource, "RLIMIT_AS"):
