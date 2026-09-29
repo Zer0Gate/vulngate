@@ -56,6 +56,16 @@ _SAFE_ERROR_TEXT = re.compile(
 _EFFECT_COLLECTIONS = frozenset({
     "observed_effects", "independent_effects", "independent_effect_evidence",
 })
+_SUMMARY_RAW_LISTS = frozenset({"network_side_effects", "parsed"})
+_SUMMARY_RAW_FIELDS = {
+    "instantiated": frozenset({"class"}),
+    "gate_blocked": frozenset({"class"}),
+    "safe_equivalent": frozenset({"kind", "detail"}),
+    "effect_evidence": frozenset({"kind", "detail"}),
+    "experiment_evidence": frozenset({
+        "declared_sequence", "step_trace", "step_evidence", "state_trace", "warnings",
+    }),
+}
 
 
 class EvidencePolicyError(ValueError):
@@ -145,6 +155,13 @@ def public_document(value: Any, *, _parent: str = "") -> Any:
                 # Effect status/kind/value_digest are harness metadata. Details
                 # may contain filenames, object paths or exception text.
                 result[key] = {}
+            elif normalized in _SUMMARY_RAW_LISTS and isinstance(item, list):
+                result[key] = [_withheld(entry) for entry in item]
+            elif normalized in _SUMMARY_RAW_FIELDS.get(_parent, ()):
+                if isinstance(item, list):
+                    result[key] = [_withheld(entry) for entry in item]
+                else:
+                    result[key] = _withheld(item)
             elif normalized == "error":
                 # Exception messages can embed arbitrary filenames, input and
                 # service replies. Status/error_type carry the failure state.

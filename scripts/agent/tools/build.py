@@ -26,6 +26,7 @@ from urllib.parse import urlsplit
 
 from ..sandbox.approval import ApprovalGate
 from ..memory.evidence_store import EvidenceStore, public_document
+from ..memory.raw_vault import RawVault
 from ..sandbox.http_observer import LoopbackHTTPObserver, OBSERVER_VERSION
 from ..sandbox.effects import (EFFECT_SCHEMA_VERSION, HTTPSemanticCollector,
                                 collector_for)
@@ -999,6 +1000,7 @@ class JavaMatrixRunner:
         self.round_no = int(round_no)
         if self.round_no < 1:
             raise ValueError("round must be a positive integer")
+        self.raw_vault = RawVault.from_environment(self.workspace, self.target, self.round_no)
         self.approval = approval or ApprovalGate()
         self.authorized_staging = authorized_staging
         self.execution_budget = execution_budget or S4ExecutionBudget()
@@ -1454,6 +1456,8 @@ class JavaMatrixRunner:
 
     def _write_cells(self, candidate_id: str, cells: List[Dict]) -> None:
         candidate_id = _safe_component(candidate_id, "candidate_id")
+        if self.raw_vault is not None:
+            self.raw_vault.capture_cells(candidate_id, cells)
         d = _contained_path(
             self.workspace,
             "state/%s/round-%02d/S4/matrix-runs/%s" % (
@@ -1511,6 +1515,7 @@ class ShellMatrixRunner:
         self.round_no = int(round_no)
         if self.round_no < 1:
             raise ValueError("round must be a positive integer")
+        self.raw_vault = RawVault.from_environment(self.workspace, self.target, self.round_no)
         self.approval = approval or ApprovalGate()
         self.authorized_staging = authorized_staging
         self.execution_budget = execution_budget or S4ExecutionBudget()
@@ -2023,6 +2028,8 @@ class ShellMatrixRunner:
 
     def _write_cells(self, candidate_id: str, cells: List[Dict]) -> None:
         candidate_id = _safe_component(candidate_id, "candidate_id")
+        if self.raw_vault is not None:
+            self.raw_vault.capture_cells(candidate_id, cells)
         d = _contained_path(
             self.workspace,
             "state/%s/round-%02d/S4/matrix-runs/%s" % (

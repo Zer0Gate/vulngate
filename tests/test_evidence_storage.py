@@ -102,6 +102,25 @@ class ProjectionTests(unittest.TestCase):
         self.assertEqual("a" * 64, safe["observed_effects"][0]["value_digest"])
         self.assertEqual(WITHHELD, safe["error"])
 
+    def test_derived_summary_marker_copies_are_withheld(self):
+        raw = {"network_side_effects": [PRIVATE], "parsed": [PRIVATE],
+               "instantiated": [{"class": PRIVATE, "version": "1"}],
+               "gate_blocked": [{"class": PRIVATE, "version": "1"}],
+               "effect_evidence": [{"kind": PRIVATE, "detail": PRIVATE,
+                                    "version": "1"}],
+               "safe_equivalent": [{"kind": PRIVATE, "detail": PRIVATE}],
+               "experiment_evidence": [{"declared_sequence": [PRIVATE],
+                                        "step_trace": [PRIVATE],
+                                        "step_evidence": [PRIVATE],
+                                        "state_trace": [PRIVATE],
+                                        "warnings": [PRIVATE]}]}
+        safe = public_document(raw)
+        self.assertNotIn(PRIVATE, json.dumps(safe))
+        self.assertEqual([WITHHELD], safe["network_side_effects"])
+        self.assertEqual([WITHHELD], safe["parsed"])
+        self.assertEqual("1", safe["instantiated"][0]["version"])
+        self.assertEqual(safe, public_document(safe))
+
     def test_unstructured_exception_and_probe_reply_are_withheld(self):
         payload = {"status": "failed-unhandled-error", "error_type": "RuntimeError",
                    "error": PRIVATE, "runtime_lab": {

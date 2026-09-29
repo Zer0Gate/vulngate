@@ -102,6 +102,7 @@ from agent.cli.runtime import (
     cmd_cleanup,
     cmd_doctor,
     cmd_matrix,
+    cmd_raw_vault,
     cmd_service_approval,
     cmd_source_evidence,
     cmd_source_map,
@@ -251,6 +252,13 @@ def build_parser() -> argparse.ArgumentParser:
     cl.add_argument("--apply", action="store_true",
                     help="perform removal; without this flag only a dry-run is printed")
     cl.set_defaults(fn=cmd_cleanup)
+
+    rv = sub.add_parser("raw-vault", help="purge expired opt-in S4 raw records")
+    rv.add_argument("action", choices=["purge-expired"])
+    rv.add_argument("--workspace", required=True)
+    rv.add_argument("--target", required=True)
+    rv.add_argument("--round", type=int, required=True)
+    rv.set_defaults(fn=cmd_raw_vault)
 
     sa = sub.add_parser("service-approval", help="authorize one isolated service start")
     sa.add_argument("--workspace", required=True)

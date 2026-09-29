@@ -9,6 +9,8 @@ JSON 产物：这些通道以非空占位符替换；空值保持空值，因此
 强制写入。普通 `error` 正文、失败的 runtime-lab `reason` 以及探针的
 `agent_reply` 也会被隐藏，失败状态和错误类型仍保留。固定格式的回执缺件错误
 可保留，以维持自动化调用者的错误判断。
+从不可信 marker 派生的 summary `network_side_effects`、`parsed`、类名、
+效果详情与实验跟踪文本只保留存在性/条目数，不把原文复制到普通输出。
 
 配置驱动 CheckpointStore、自治 write_artifact、Java/Shell cells.json、账本、
 报告摘要与 CLI JSON 输出已接入同一投影。读回 JSON 与实时 cell 的汇合使用
@@ -26,10 +28,32 @@ CLI 的 staging-exec/staging-copy 默认输出隐藏远端 stdout/stderr，但�
 将远端诊断写到终端 stderr 供现场排障；它不会成为漏洞证据，也不会写入普通
 JSON。此选项可能把远端原始文本带入终端记录，使用者应按自己的日志策略处理。
 
-这是 R05 的普通持久化基础，不是 R05 验收完成。特别仍需：
+S4 原始矩阵诊断另有 opt-in vault；未设置 `VULNGATE_RAW_VAULT` 时默认关闭，
+普通 `cells.json` 仍只写安全投影。操作者可在启动矩阵进程前显式设置
+`VULNGATE_RAW_VAULT=plain`，或设置 `VULNGATE_RAW_VAULT=fernet` 并提供
+`VULNGATE_RAW_VAULT_KEY_FILE` 指向本人拥有的 0600 Fernet 密钥文件。
+加密依赖可通过 `.[vault]` 安装；缺依赖、密钥无效、权限过宽及无效模式均报错，
+不会回退明文。`VULNGATE_RAW_VAULT_DAYS` 可设为 1–30，默认 7。
+每条记录独立写入 `state/<target>/round-N/S4/raw-vault/`，目录 0700、
+文件 0600。文件名固定记录创建和过期时刻；缩短或延长当前配置均不会改变
+旧记录的期限。读取已过期记录会被拒绝，写入新记录时自动清理同目标/轮次
+已过期的记录。若没有后续写入，须按保留策略运行：
 
-- raw vault 默认关闭、显式启用、过期清理及可选加密；目前普通存储不提供原始
-  输出恢复功能。
+```sh
+python3 scripts/agent_cli.py raw-vault purge-expired \
+  --workspace <workspace> --target <target> --round <round>
+```
+
+清理不需密钥，因此密钥遗失时也可执行。该命令仅删除指定目标/轮次、
+名称和期限格式有效的过期记录；不会遍历其他目标。**没有后台定时删除**，
+严格物理删除需要操作者按周期调度该命令。vault 的读取入口目前是
+`RawVault.read(record_name)` Python API，不会在普通 CLI 或证据报告里输出
+原始内容。明文模式仅提供文件权限隔离，不抵御同 UID/root 进程；运行在共享
+环境应选用加密模式，并妥善备份/轮换密钥。过期后不会因为换密钥或调整保留
+天数恢复读取。
+
+这是 R05 的部分实现，不是 R05 验收完成。特别仍需：
+
 - 其余历史写入器、审批 JSONL、回放包及源码/自由文本报告逐项迁移与验收。
   正则脱敏只是附加层，不能证明任意业务文本、路径、源码片段或编码值安全。
 - 已存在的旧原始产物不自动删除；须先确定留存/取证策略，再进行迁移与清理。

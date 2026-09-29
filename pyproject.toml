@@ -16,7 +16,9 @@ dev = [
   "coverage==7.6.4",
   "hypothesis==6.115.5",
   "shellcheck-py==0.10.0.1",
+  "cryptography==50.0.1",
 ]
+vault = ["cryptography==50.0.1"]
 
 [tool.setuptools]
 packages = []

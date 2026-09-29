@@ -1,5 +1,24 @@
 # VulnGate 整改续接记录（2026-09-29）
 
+## 2026-09-30 增量：R05 raw vault（优先于以下历史断点）
+
+普通证据补丁已提交推送为 `ed84fb2e74c4a77e1b26206e0e8118e1bb4df5dc`。
+run `36629640121` 的 security、四组 Linux/macOS 回归与固定 `test` 汇总全部
+成功；独立 CodeQL 仍失败，当前 open 告警 #7 为 S4 观测/效果数据流至 CLI
+通用 JSON 输出（`cli/runtime.py`），不能宣布门禁通过或合并。PR #8 仍为草稿、待审核。
+
+当前工作树在该提交之上继续 R05：新增 `memory/raw_vault.py`，Java/Shell
+矩阵写入前显式 opt-in 保存原始 cells；默认关闭，私有文件、每条记录固定
+1–30 天期限、过期拒读/范围清理、可选 Fernet 且配置/依赖/密钥失败不回退明文；
+新增 `raw-vault purge-expired` 操作入口及文档。隔离环境实际安装
+`cryptography==50.0.1` 后，含最终清理入口的 791 项全量（64.2s）、
+Ruff/mypy 通过。本增量提交/推送状态须以实时 Git 核对，远端矩阵与
+CodeQL 仍须按新 HEAD 验收。`docs/EVIDENCE-STORAGE.md`
+说明 opt-in、权限、期限和清理限制。R05 仍为 partial；旧产物、自由文本、
+审批日志和其余写入器未完成。R01–R12 总体剩余范围见本文件尾部和
+`docs/REMEDIATION-PLAN.md`，不得因为本增量收缩目标。恢复时先查看最新
+Git/PR/CI，从未完成的 R05 数据流审查继续，不重做 `ed84fb2`。
+
 ## 2026-09-30 增量：R05 普通持久化候选补丁（以实际 Git 为准）
 
 已在上次 `d271f13` 交接断点后实施共用普通证据投影与私有原子写入，

@@ -25,6 +25,7 @@ from agent.tools.build import (
 )
 from agent.tools.github_auth import github_token_source
 from agent.memory.evidence_store import public_json
+from agent.memory.raw_vault import RawVault
 from agent.tools import source_evidence as se
 
 
@@ -114,6 +115,14 @@ def cmd_cleanup(args: argparse.Namespace) -> int:
                   "detail": type(exc).__name__, "removed": removed})
             return 1
     _out({"status": "removed", "workspace": str(workspace), "target": target,
+          "removed": removed, "claim_status": "not-a-finding"})
+    return 0
+
+
+def cmd_raw_vault(args: argparse.Namespace) -> int:
+    """Purge expired private S4 records for one explicit target and round."""
+    removed = RawVault.purge_expired_scope(Path(args.workspace), args.target, args.round)
+    _out({"status": "purged", "target": args.target, "round": args.round,
           "removed": removed, "claim_status": "not-a-finding"})
     return 0
 
@@ -405,4 +414,3 @@ def cmd_staging_copy(args: argparse.Namespace) -> int:
           "evidence_role": "environment-preparation-only"})
     _staging_raw_output(args, result.stdout, result.stderr)
     return result.returncode if result.returncode >= 0 else 2
-
