@@ -9,10 +9,10 @@
 
 | ID | 工作包与验收要求 | 状态 / 证据 |
 | --- | --- | --- |
-| R01 | 新 PR；稳定 test/security 门禁；矩阵失败/取消/跳过阻断；审核合并 | implemented：test 汇总门禁；远端待运行 |
+| R01 | 新 PR；稳定 test/security 门禁；矩阵失败/取消/跳过阻断；审核合并 | implemented：PR #8；test 汇总已对远端矩阵失败关闭；macOS 3.10/CodeQL 待修，未合并 |
 | R02 | 服务与 PoC 统一隔离生命周期；启动前限制；容器/cgroup 清理；真实环境压力与失败测试 | planned |
 | R03 | 每次请求预留调用/token；网络与空响应 retry；并发；未知计费；deadline；成本 unknown | validated-local：12 项专项、731 项全量（Python 3.13）；Ruff/mypy/compileall 通过；远端矩阵待通过 |
-| R04 | 安装事务、故障恢复、并发；不可变工具快照；旧线程不静默混版 | partial：移除旧缓存 alias；修复启用前 EXIT trap 被覆盖；三项安装回归。并发锁、完整事务恢复及不可变快照仍待实现 |
+| R04 | 安装事务、故障恢复、并发；不可变工具快照；旧线程不静默混版 | validated-local：内容摘要版本目录、并发锁、持久化事务/恢复、启用后树校验；18 项专项和 748 项全量（Python 3.13）通过。远端矩阵、正式包实际激活及旧线程行为仍待验收；见 INSTALLATION.md |
 | R05 | 普通证据安全序列化；raw vault 默认关、权限与期限；错误路径敏感信息测试 | planned |
 | R06 | Run Manifest；树/配置/目标/镜像/policy 身份绑定；续跑漂移拒绝 | planned |
 | R07 | claim/observer/scope/predicate/controls；目标自写数据、无关 PID、截断不误确认或排除 | planned |
@@ -24,7 +24,7 @@
 
 ## 依赖与迁移
 
-M0：R01。M1：R02 止损 + R03/R04/R05 和必需 R08 回归。
+M0：R01。M1：R02 止损 + R03/R04/R05 和必需 R08/R12 最小端到端回归。
 M2：R06 → R07，同时完成 R02/R08 的真实隔离验收。
 M3：R09 可信发布；R10/R11/R12 小 PR 持续推进。
 
@@ -49,3 +49,7 @@ M3：R09 可信发布；R10/R11/R12 小 PR 持续推进。
   需按来源和实际边界核验修复，不抑制告警以代替整改。
 - 本地默认 python3 已变为 3.14，未装 Hypothesis；完整验收使用依赖齐全的
   `/opt/local/bin/python3`（3.13），不把环境缺包记成通过或代码失败。
+- 安装事务本地验证：18 项专项覆盖中断恢复、并发、旧目录迁移、版本冲突、
+  篡改、磁盘写入失败和错误缓存身份；748 项全量通过（66.2s），有既存 socket
+  ResourceWarning，未将其隐去。测试使用临时目录和模拟 Codex，不代表生产插件
+  已更新，也不证明真实断电/磁盘硬件的持久性。
