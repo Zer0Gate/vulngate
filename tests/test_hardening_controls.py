@@ -332,6 +332,7 @@ class HardeningControlTests(unittest.TestCase):
                 {"id": "marker", "kind": "exact", "expression": "safe"},
                 {"id": "role", "kind": "jsonpath", "expression": "$.user.role"},
             ])
+        self.addCleanup(observer.close)
         results = observer._predicate_results(
             b'{"user":{"role":"admin"},"message":"safe"}')
         self.assertEqual([True, True], [row["matched"] for row in results])

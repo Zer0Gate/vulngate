@@ -22,7 +22,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlsplit
 
 
-OBSERVER_VERSION = "loopback-http-observer-v2-https-predicates"
+OBSERVER_VERSION = "loopback-http-observer-v3-pinned-origin-tls12"
 MAX_REQUEST_BODY_BYTES = 16 * 1024 * 1024
 MAX_RESPONSE_BODY_BYTES = 64 * 1024 * 1024
 READ_CHUNK_BYTES = 64 * 1024
@@ -132,6 +132,12 @@ class LoopbackHTTPObserver:
                  tls_certfile: Optional[str] = None,
                  tls_keyfile: Optional[str] = None):
         self.scheme, self.host, self.port, self.target_digest = _origin(target_url)
+        # Never resolve client-controlled names at the forwarding boundary.
+        # The two accepted localhost aliases have a deterministic IPv4 meaning;
+        # an IPv6-only fixture must explicitly declare [::1].
+        self._connection_host = ("127.0.0.1" if self.host in {
+            "localhost", "localhost.localdomain"} else
+            ipaddress.ip_address(self.host).compressed)
         self.run_id = str(run_id)
         self.predicates = self._normalize_predicates(predicates)
         self.tls_certfile = str(tls_certfile or "")
@@ -175,7 +181,8 @@ class LoopbackHTTPObserver:
         return self
 
     def close(self) -> None:
-        self._server.shutdown()
+        if self._thread is not None and self._thread.is_alive():
+            self._server.shutdown()
         self._server.server_close()
         if self._thread is not None:
             self._thread.join(timeout=2)
@@ -198,6 +205,24 @@ class LoopbackHTTPObserver:
 
     def _record_gap(self, reason: str) -> None:
         self._append({"kind": "observer-gap", "reason": reason})
+
+    def _host_header(self) -> str:
+        host = "[%s]" % self.host if ":" in self.host else self.host
+        return "%s:%d" % (host, self.port)
+
+    def _upstream_connection(self) -> http.client.HTTPConnection:
+        if self.scheme == "http":
+            return http.client.HTTPConnection(self._connection_host, self.port, timeout=10)
+        if not self.tls_certfile:
+            raise ValueError("https-fixture-certificate-unavailable")
+        # Local fixtures can use a CN-only certificate. Authenticate against the
+        # operator-supplied fixture trust file rather than disabling verification.
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        context.minimum_version = ssl.TLSVersion.TLSv1_2
+        context.check_hostname = False
+        context.load_verify_locations(cafile=self.tls_certfile)
+        return http.client.HTTPSConnection(
+            self._connection_host, self.port, timeout=10, context=context)
 
     @staticmethod
     def _normalize_predicates(value: Any) -> List[Dict[str, str]]:
@@ -323,6 +348,9 @@ class LoopbackHTTPObserver:
             self._record_gap("https-fixture-certificate-unavailable")
             handler.send_error(501, "HTTPS fixture certificate is unavailable")
             return
+        upstream = None
+        client = None
+        reader = None
         try:
             host_text, port_text = str(handler.path or "").rsplit(":", 1)
             host = _normalize_host(host_text)
@@ -333,7 +361,9 @@ class LoopbackHTTPObserver:
                 request_id = self._next_request_id
                 self._next_request_id += 1
             context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            context.minimum_version = ssl.TLSVersion.TLSv1_2
             context.load_cert_chain(self.tls_certfile, self.tls_keyfile)
+            handler.connection.settimeout(10)
             handler.send_response(200, "Connection Established")
             handler.end_headers()
             client = context.wrap_socket(handler.connection, server_side=True)
@@ -349,12 +379,11 @@ class LoopbackHTTPObserver:
                 raise ValueError("https-request-body-over-observer-limit")
             body = reader.read(int(length_text)) if int(length_text) else None
             path = parts[1] if parts[1].startswith("/") else "/"
-            upstream = http.client.HTTPSConnection(
-                host, port, timeout=10, context=ssl._create_unverified_context())
+            upstream = self._upstream_connection()
             forwarded = {key: value for key, value in headers.items()
                          if key.lower() not in _HOP_BY_HOP
                          and key.lower() not in {"host", "content-length"}}
-            forwarded["Host"] = headers.get("Host", host)
+            forwarded["Host"] = self._host_header()
             forwarded["Connection"] = "close"
             upstream.request(parts[0], path, body=body, headers=forwarded)
             response = upstream.getresponse()
@@ -387,10 +416,15 @@ class LoopbackHTTPObserver:
                               "predicate_id": predicate.get("id", ""),
                               "matched": bool(predicate.get("matched")),
                               "error": predicate.get("error", "")})
-            upstream.close()
-            client.close()
         except (OSError, ValueError, ssl.SSLError, http.client.HTTPException) as exc:
             self._record_gap(str(exc)[:96] or type(exc).__name__)
+        finally:
+            if upstream is not None:
+                upstream.close()
+            if reader is not None:
+                reader.close()
+            if client is not None:
+                client.close()
 
     def _proxy_request(self, handler: BaseHTTPRequestHandler) -> None:
         request_id = None
@@ -419,18 +453,13 @@ class LoopbackHTTPObserver:
                 request_id = self._next_request_id
                 self._next_request_id += 1
 
-            connection = (http.client.HTTPSConnection(
-                host, port, timeout=10, context=ssl._create_unverified_context())
-                          if self.scheme == "https" else
-                          http.client.HTTPConnection(host, port, timeout=10))
+            connection = self._upstream_connection()
             headers = {}
             for key, value in handler.headers.items():
                 if key.lower() not in _HOP_BY_HOP and key.lower() not in {
                         "host", "content-length", "expect"}:
                     headers[key] = value
-            headers["Host"] = handler.headers.get(
-                "Host", ("[%s]" % host if ":" in host else host) +
-                (":" + str(port) if port != 80 else ""))
+            headers["Host"] = self._host_header()
             headers["Connection"] = "close"
             connection.request(handler.command, path, body=request_body,
                                headers=headers)

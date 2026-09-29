@@ -9,13 +9,13 @@
 
 | ID | 工作包与验收要求 | 状态 / 证据 |
 | --- | --- | --- |
-| R01 | 新 PR；稳定 test/security 门禁；矩阵失败/取消/跳过阻断；审核合并 | implemented：PR #8；test 汇总已对远端矩阵失败关闭；macOS 3.10/CodeQL 待修，未合并 |
+| R01 | 新 PR；稳定 test/security 门禁；矩阵失败/取消/跳过阻断；审核合并 | partial：PR #8；6736d6e 四组回归和 test/security job 已通过；独立 CodeQL 及其合并门禁仍待完成，未合并 |
 | R02 | 服务与 PoC 统一隔离生命周期；启动前限制；容器/cgroup 清理；真实环境压力与失败测试 | planned |
 | R03 | 每次请求预留调用/token；网络与空响应 retry；并发；未知计费；deadline；成本 unknown | validated-local：12 项专项、731 项全量（Python 3.13）；Ruff/mypy/compileall 通过；远端矩阵待通过 |
 | R04 | 安装事务、故障恢复、并发；不可变工具快照；旧线程不静默混版 | validated-local：内容摘要版本目录、并发锁、持久化事务/恢复、启用后树校验；18 项专项和 748 项全量（Python 3.13）通过。远端矩阵、正式包实际激活及旧线程行为仍待验收；见 INSTALLATION.md |
 | R05 | 普通证据安全序列化；raw vault 默认关、权限与期限；错误路径敏感信息测试 | planned |
 | R06 | Run Manifest；树/配置/目标/镜像/policy 身份绑定；续跑漂移拒绝 | planned |
-| R07 | claim/observer/scope/predicate/controls；目标自写数据、无关 PID、截断不误确认或排除 | planned |
+| R07 | claim/observer/scope/predicate/controls；目标自写数据、无关 PID、截断不误确认或排除 | partial：HTTP 连接固定声明的数字 loopback、Host 由声明生成、TLS>=1.2 且校验 fixture 信任；异常连接清理。完整 observer 来源/归因/截断验收仍待完成 |
 | R08 | 真 backend CI；风险模块分项 branch coverage；F821；依赖审查；失败样本验证 | partial：恢复 F821 并修复四条诊断；真实 Ruff 负向测试阻断未定义变量；750 项本地全量通过。真实 backend/分项覆盖/依赖审查仍待完成 |
 | R09 | 审核提交的不可变 tag；Release 归档/SBOM/checksum/provenance；干净安装 | planned |
 | R10 | 三入口共享应用服务；build 等按职责拆分；同 fixture 结论一致 | planned |
@@ -64,3 +64,8 @@ M3：R09 可信发布；R10/R11/R12 小 PR 持续推进。
   取最大值修复并将 resource policy 升为 v7；余量不变、测量失败仍关闭执行。
   46 项专项、755 项全量（64.5s）、Ruff/mypy 通过，远端验收待新提交运行；
   完整隔离 R02 尚未完成。
+- `6736d6e` 的 run `36542833962` 全部 workflow jobs 通过，包括此前失败的
+  macOS 3.10。此证据关闭该兼容性失败，不代表完整隔离或独立 CodeQL 无告警。
+- HTTP observer 固定声明目标/Host、TLS 最低版本与 fixture 信任、异常清理：
+  新增五项边界测试，包含真实 HTTPS fixture 的专项及本地全量 760 项通过
+  （69.9s）。代码已待提交；CodeQL 需按新 HEAD 单独验收。

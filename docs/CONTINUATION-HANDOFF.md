@@ -7,9 +7,15 @@
 
 基于下文 CI 数据，runner 已改为测量 controller 和 native launcher 两个
 VM 基线，取较大者加原有 4 GiB 余量；任一测量失败仍拒绝执行。
-资源 policy 升为 v7，避免旧基线产物被当作新契约复用。46 项专项通过，
-远端 arm64/Python 3.10 验收尚待新提交 CI；不能提前宣称原失败已关闭。
+资源 policy 升为 v7，避免旧基线产物被当作新契约复用。46 项专项和 755 项全量
+通过，已推送 `6736d6e`。远端 run `36542833962` 已全部 workflow jobs 成功，
+包括 macOS 3.10/3.13、Linux 3.10/3.13 和 test 汇总，原兼容性失败已关闭。
 继续时先查询最新 HEAD/CI，不再重复下文已实施的“下一步”修补。
+
+HTTP observer 已继续实现固定连接目标、显式 TLS 1.2 下限、fixture 信任校验
+和 CONNECT 异常清理，专项及 760 项本地全量已通过；边界及剩余 R07 工作见
+HTTP-OBSERVER.md。
+最终 CI/CodeQL 是否接受需读取最新提交结果，不能仅按源码判断已清零。
 
 ## 目标与授权
 
