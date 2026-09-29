@@ -60,7 +60,8 @@ python3 scripts/agent_cli.py raw-vault purge-expired \
 - 其余历史写入器、审批 JSONL、回放包及源码/自由文本报告逐项迁移与验收。
   正则脱敏只是附加层，不能证明任意业务文本、路径、源码片段或编码值安全。
 - 已存在的旧原始产物不自动删除；须先确定留存/取证策略，再进行迁移与清理。
-- 确认所有持久化与 CLI 错误路径、最终安装包、实际 CodeQL 门禁和真后端回归。
+- 确认所有持久化与 CLI 错误路径、最终安装包和真后端回归；后续改动仍须
+  维持当前 HEAD 的 CodeQL 通过状态。
 
 专项测试：`tests/test_evidence_storage.py`；兼容性测试涵盖 S4 真实 HTTP 观测
 读回、结论、spawn/receipt challenge、续跑与 replay pack。所有用例只使用合成

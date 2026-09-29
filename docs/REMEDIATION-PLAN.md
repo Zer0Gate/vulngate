@@ -9,11 +9,11 @@
 
 | ID | 工作包与验收要求 | 状态 / 证据 |
 | --- | --- | --- |
-| R01 | 新 PR；稳定 test/security 门禁；矩阵失败/取消/跳过阻断；审核合并 | partial：PR #8；6736d6e 四组回归和 test/security job 已通过；独立 CodeQL 及其合并门禁仍待完成，未合并 |
+| R01 | 新 PR；稳定 test/security 门禁；矩阵失败/取消/跳过阻断；审核合并 | partial：PR #8；1270221 的四组回归、test/security 及独立 CodeQL 均通过，open 告警为空；PR 仍为草稿、review required，合并/发布未完成 |
 | R02 | 服务与 PoC 统一隔离生命周期；启动前限制；容器/cgroup 清理；真实环境压力与失败测试 | planned |
 | R03 | 每次请求预留调用/token；网络与空响应 retry；并发；未知计费；deadline；成本 unknown | validated-local：12 项专项、731 项全量（Python 3.13）；Ruff/mypy/compileall 通过；远端矩阵待通过 |
 | R04 | 安装事务、故障恢复、并发；不可变工具快照；旧线程不静默混版 | validated-local：内容摘要版本目录、并发锁、持久化事务/恢复、启用后树校验；18 项专项和 748 项全量（Python 3.13）通过。远端矩阵、正式包实际激活及旧线程行为仍待验收；见 INSTALLATION.md |
-| R05 | 普通证据安全序列化；raw vault 默认关、权限与期限；错误路径敏感信息测试 | partial：普通 JSON/矩阵/CLI/账本共用投影与私有原子写入已推送，S4 policy v13；raw vault 默认关、1–30 天独立期限、0700/0600、可选 Fernet、显式清理已推送且远端矩阵通过，CodeQL #7 未闭合。旧产物、剩余自由文本及真包验收未完成，见 EVIDENCE-STORAGE.md |
+| R05 | 普通证据安全序列化；raw vault 默认关、权限与期限；错误路径敏感信息测试 | partial：普通 JSON/矩阵/CLI/账本共用投影与私有原子写入已推送，S4 policy v13；raw vault 默认关、1–30 天独立期限、0700/0600、可选 Fernet、显式清理及 CLI 固定状态回执均已推送；1270221 的远端矩阵、CodeQL 通过。旧产物、剩余自由文本及真包验收未完成，见 EVIDENCE-STORAGE.md |
 | R06 | Run Manifest；树/配置/目标/镜像/policy 身份绑定；续跑漂移拒绝 | planned |
 | R07 | claim/observer/scope/predicate/controls；目标自写数据、无关 PID、截断不误确认或排除 | partial：HTTP 连接固定声明的数字 loopback、Host 由声明生成、TLS>=1.2 且校验 fixture 信任；异常连接清理。完整 observer 来源/归因/截断验收仍待完成 |
 | R08 | 真 backend CI；风险模块分项 branch coverage；F821；依赖审查；失败样本验证 | partial：恢复 F821 并修复四条诊断；真实 Ruff 负向测试阻断未定义变量；750 项本地全量通过。真实 backend/分项覆盖/依赖审查仍待完成 |
@@ -86,3 +86,7 @@ M3：R09 可信发布；R10/R11/R12 小 PR 持续推进。
   改成固定执行状态/计数回执，不再把完整观测摘要送往通用 JSON 出口；
   792 项本地全量（63.8s）、Ruff/mypy 通过；后续提交需以新 HEAD 验证
   CodeQL 真正通过。
+- `1270221` 的 run `36632179141`：security、四组 Linux/macOS 回归、
+  固定 `test` 汇总和独立 CodeQL 全部通过；PR merge ref 的 open 告警为空。
+  PR 仍为草稿、review required；这个结果不证明 R05 全部写入器安全，也不
+  替代审核、R02–R12 验收或正式发布。
