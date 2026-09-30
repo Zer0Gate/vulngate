@@ -1,5 +1,113 @@
 # VulnGate 整改续接记录（2026-09-29）
 
+## 2026-10-01 03:12 北京时间：额度交接与最新 CI 失败（当前断点）
+
+本窗口已交接：`resetsAt=1790804622`。应用实时读数五小时已用 99%、
+剩余 1%；北京时间重置时间 **2026-10-01 05:43:42**（UTC 09-30 21:43:42）。
+读取的是 `rateLimitsByLimitId.codex.primary` 的 300 分钟窗口，不使用重置券。
+同窗口后续 heartbeat 不重复提交交接；目标保持 active，不标 complete/blocked/paused。
+
+### Git、提交与运行状态
+
+交接前本地 HEAD、origin branch 与 PR #8 HEAD 一致：
+`f27e0b9f487aff3ddda8a404a161c5409db8d622`（仅交接/计划文档）。
+最近源码提交 `fc429d5f9663ab2837b68b848a38e66f12520898` 完成 R06 第一批
+create-once Run Manifest/checkpoint 身份门禁；之前 R02 源码 `f9836f0`。
+交接前工作树和 index 干净，本轮没有新增 cells/receipt 源码改动，没有未提交源码。
+只提交推送本文件；交接提交 SHA 用 `git log -1 --format=%H -- docs/CONTINUATION-HANDOFF.md`
+读取。PR #8 OPEN/DRAFT/REVIEW_REQUIRED，未合并、发布或刷新插件。
+
+源码 fc429d5 的历史 run `36760403261` SUCCESS 及 852 项本地成功仍是有效历史
+证据，但不能证明最新 HEAD 全绿。最新 f27e0b9 的 run **36761121625 FAILURE**：
+
+| job | ID | 终态 |
+| --- | --- | --- |
+| security | 110043621892 | SUCCESS |
+| Ubuntu Python 3.10 | 110043622336 | SUCCESS |
+| Ubuntu Python 3.13 | 110043622236 | SUCCESS |
+| macOS Python 3.13 | 110043622186 | SUCCESS |
+| macOS Python 3.10 | 110043622374 | FAILURE |
+| real-isolation | 110043622425 | FAILURE |
+| test 聚合 | 110044856469 | FAILURE（正确阻断） |
+
+独立 CodeQL SUCCESS。上述 run 所有 jobs 已终态，没有仍运行的旧验收 job。
+只读调查 agent Bohr 已完成并关闭，没有运行中 agent 或本地长测。
+交接文档推送会触发新的 CI，**其 run/job ID 尚未产生于本节写入时**；恢复时按
+交接提交的精确 HEAD 查询新 run，不将旧 run 成功冒充新文档 HEAD 的验收。
+
+### 未解决失败：先诊断，不能用重跑成功或放宽门禁替代根因
+
+1. macOS 3.10：`test_service_lifecycle.ServiceLifecycleTests.test_managed_healthcheck_joins_service_cgroup_without_host_runner`
+   在 `tests/test_service_lifecycle.py:256` ready=false。假 backend 已标 isolated/enforced，
+   health returncode=1、timed_out=false、managed-service-backend，最终 healthcheck timeout，
+   startup_timeout=3；backend/cgroup 清理 complete。852 项（95.655s），1 failure、4 live skip。
+   需核对 fixture 就绪事件、健康子进程 stderr、资源限制和 deadline，尚未证明是超时预算问题。
+2. real Docker：`tests.test_isolation_backend_live.LiveIsolationBackendTests.test_container_health_identity_and_detached_cleanup`
+   在 :163/:126 ready=false；Docker 28.0.4，PermissionError，isolation-unverified/enforced=false，
+   cleanup-incomplete、backend cleanup failed: OSError，并有 service.lock 未关闭警告。
+   4 项（10.777s），1 failure、无 skip；bubblewrap 与另外两项通过。日志尚不足以区分
+   创建失败、身份发现/ownership 错误或迟到创建。`ContainerBackend.after_start` 有 5 秒身份
+   发现期限；异常类不能证明具体分支。先补有界合成 fixture/引擎诊断并保留未决清理语义。
+
+本次仅核对失败日志，没有重跑 CI、没有修补或关闭 R02 稳定性缺口。
+
+### R06 下一层调查已完成，但未实现
+
+基线聚焦回归 `test_regressions.S4RegressionTests.test_persisted_cells_override_proxy_timeout_and_fallback_is_merged`
+1 项通过（0.006s）：未绑定 persisted/fallback cells 仍会被汇合；这是缺口证据，不是修复证明。
+checkpoint 校验不保护 `memory/state.py` 普通 artifact 读取；`tools/build.py` 两种 runner
+发布 cells 与 `converge_s4_cells`、pipeline 的原始 cells/S6–S8 fallback、S7/S8 读取、
+autonomous 新建未绑定 store、报告和 ledger 跳过发布均需统一验收边界。
+receipt 当前仅检查 schema/candidate/nonce/path/size/hash/completed，不绑定父执行身份；
+独立 CLI 的 PoC `--manifest` 没有完整目标配置，不能伪造身份或改变既有参数含义。
+
+建议共享显式接受已验证父摘要的产物发布/读取接口；保留历史 inspect，与执行验收分离。
+不能给 list/candidate-keyed map 硬加字段或自动升级旧产物；同轮多 PoC、Java/shell 修复、
+partial cells、空矩阵要保留，稳定父身份之外仍需尝试/内容身份。receipt schema 若升级，
+同步 `memory/evidence_store.py` nonce 白名单。pipeline/autonomous 身份拒绝 exit=2，
+matrix deadline 到期 exit=3，receipt verify 契约失败 exit=2；inspect/missing exit=0。
+当前 inspect 构造 store 会创建/chmod，不能声称已经严格零副作用。
+autonomous S5/S6 resume 未回填 novelty/CVSS、后续 `r["cvss"]` 的 KeyError 风险和
+S7 报告/S8 ledger 门禁差异只是静态推论，尚未动态验证，不是上述 CI 根因结论。
+
+### 剩余 R01–R12（详细验收项仍见 REMEDIATION-PLAN.md）
+
+- R01 partial：最新 test 不通过，PR 草稿/审核待办；禁止合并。
+- R02 partial：本批历史健康隔离通过，但最新两项失败重新打开稳定性；统一 PoC/service
+  backend、observer、rootless、压力/断连/迟到创建和崩溃恢复仍未完成。
+- R03/R04 validated-source-tests：预算/安装事务源码回归已完成；真实 provider 计费、
+  正式安装激活和旧线程验收未宣称完成。
+- R05 partial：旧产物、剩余写入器/自由文本及正式包安全验收。
+- R06 partial：第一批 checkpoint 门禁完成；上述 cells/receipt/report 全链、完整 runtime
+  闭包/派生 lane、镜像实际 launch 固定、校验到使用冻结未完成。
+- R07 partial：observer 来源/归因/截断/恶意自报控制未完成。
+- R08 partial：真实失败确实阻断；分模块 branch coverage、依赖及 runner 迁移审查待办。
+- R09 planned：审核/tag、Release 归档、SBOM/checksum/provenance、干净安装。
+- R10 planned：三入口共享服务/build 按职责拆分。
+- R11 planned：installed/probed/enforced 能力矩阵和文案。
+- R12 planned：真实正负/未知/恶意自报 fixture 与误判、pending、资源指标。
+
+### 恢复顺序与命令
+
+先检查交接 HEAD 的 CI，定位上述两项失败并按风险验收；再继续 R06 第二层，不重做
+已经提交验证的 checkpoint 第一批。不降低 fail-closed/cleanup 门槛，不把 macOS live skip
+当作真实 backend 证明；补丁完成后完整测试、一次独立审阅和精确新 HEAD CI 才能验收。
+
+```sh
+git status --short --branch
+git log -3 --oneline
+gh pr view 8 --json headRefOid,isDraft,state,reviewDecision,statusCheckRollup
+gh run list --branch Zer0Gate/vulngate-release-1.3.0 --limit 5 --json databaseId,headSha,status,conclusion
+gh run view 36761121625 --json status,conclusion,jobs
+gh api --allow-escape-sequences repos/Zer0Gate/vulngate/actions/jobs/110043622374/logs
+gh api --allow-escape-sequences repos/Zer0Gate/vulngate/actions/jobs/110043622425/logs
+PYTHONPATH=scripts:tests /tmp/vulngate-vault.bQGImB/bin/python -m unittest test_service_lifecycle.ServiceLifecycleTests.test_managed_healthcheck_joins_service_cgroup_without_host_runner -v
+PYTHONPATH=scripts /tmp/vulngate-vault.bQGImB/bin/python -m unittest discover -s tests -t tests -q
+```
+
+真实测试须在配置好 backend 的 Linux CI 使用 `VULNGATE_LIVE_ISOLATION=1`，参考现有
+workflow 的安装/运行步骤；本地虚拟环境若已失效，按开发依赖重建，不改源码绕过测试。
+
 ## 2026-10-01 增量：R06 Run Manifest/checkpoint 身份门禁
 
 ### 最新验收状态（优先于下方提交前候选记录）
