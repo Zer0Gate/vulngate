@@ -93,7 +93,7 @@ def generate_poc(ctx: AutoCtx, cand: Dict[str, Any]) -> str:
         % (cand["candidate_id"], cand.get("surface"), cand.get("entry"),
            cand.get("logic"), pre, versions,
            experiment_plan or "（无实验计划）",
-           ctx.cfg.api_hint or "见入口清单",
+           ctx.api_hint or "见入口清单",
            src_block or "（无源码片段）", class_name, ctx.cfg.name,
            cand.get("entry") or _fmt_entries(ctx.cfg.entry_points)[:200])
     )
@@ -135,7 +135,7 @@ def repair_poc(ctx: AutoCtx, cand: Dict[str, Any], src_text: str, compile_error:
         "只允许 ASCII 字符（禁止全角中文标点），无 Markdown 围栏。"
         % (cand["candidate_id"], compile_error[-3000:],
            cand.get("surface", ""), cand.get("logic", ""),
-           ctx.cfg.api_hint or "（无）", ctx.cfg.name,
+           ctx.api_hint or "（无）", ctx.cfg.name,
            cand.get("entry") or "见 API 提示", class_name)
     )
     text = ctx.llm.ask(SYSTEM_POC, user, max_tokens=8000, reasoning_effort="low")
@@ -768,5 +768,4 @@ def cvss_for_tier(tier: str) -> str:
     if tier == "0":
         return "AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H"
     return "AV:N/AC:H/PR:N/UI:N/S:U/C:H/I:H/A:N"
-
 

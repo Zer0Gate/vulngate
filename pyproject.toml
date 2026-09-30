@@ -42,6 +42,7 @@ files = [
   "scripts/agent/sandbox/effects.py",
   "scripts/agent/sandbox/http_observer.py",
   "scripts/agent/sandbox/isolation.py",
+  "scripts/agent/orchestrator/run_identity.py",
 ]
 follow_imports = "skip"
 check_untyped_defs = true

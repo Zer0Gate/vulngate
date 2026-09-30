@@ -36,6 +36,10 @@ class PipelineSelectionTests(unittest.TestCase):
             cfg = TargetConfig('fixture', '2026-09-16', candidates=[
                 {'candidate_id': 'deferred', 'surface': 'exec'}])
             ctx = StageContext(Path(td), 'fixture', 1, cfg, offline=True)
+            from agent.orchestrator.run_identity import RunManifest, bind_round
+            bind_round(ctx.store, RunManifest.collect(
+                Path(td), cfg, 1,
+                execution_options={'driver': 'pipeline', 'offline': True}))
             ctx.store.write_artifact('S1', 'coverage-summary.json', {
                 'status': 'complete',
                 'scope': {'status': 'matched', 'valid': True},

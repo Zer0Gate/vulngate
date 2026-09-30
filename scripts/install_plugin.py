@@ -23,14 +23,7 @@ import tempfile
 import time
 import uuid
 
-from agent.tools.tool_identity import IDENTITY_FILE, tree_identity, verify_tree
-
-PAYLOAD = (
-    ".codex-plugin", "hooks", "skills", "scripts", "macos", "assets", "docs",
-    "benchmarks", "schemas", "pyproject.toml", "README.md", "README.zh-CN.md",
-    "LICENSE", "CHANGELOG.md", "PROVENANCE.md", "RELATED_WORK.md", "SECURITY.md",
-    "SECURITY.zh-CN.md", "CONTRIBUTING.md", "CONTRIBUTING.zh-CN.md",
-)
+from agent.tools.tool_identity import IDENTITY_FILE, PAYLOAD, tree_identity, verify_tree
 
 
 def sync_dir(path: Path) -> None:

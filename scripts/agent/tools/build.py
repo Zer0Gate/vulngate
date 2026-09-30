@@ -624,6 +624,24 @@ def _probe_java(java_bin: Path) -> Dict[str, str]:
             "error": "" if proc.returncode == 0 else "exit-%d" % proc.returncode}
 
 
+def select_java_executables(java_home: str = "", java_bin: str = ""
+                            ) -> tuple[Optional[Path], Optional[Path], Path]:
+    """Resolve exact executable paths without running target-selected code."""
+    if java_home:
+        home = Path(java_home).expanduser().resolve()
+        return home / "bin" / "java", home / "bin" / "javac", home
+    if java_bin:
+        java = _resolve_executable(java_bin, "java")
+        if java is None:
+            return None, None, Path("")
+        home = java.parent.parent if java.parent.name == "bin" else Path("")
+        return java, java.parent / "javac", home
+    java = _resolve_executable("", "java")
+    javac = _resolve_executable("", "javac")
+    home = java.parent.parent if java and java.parent.name == "bin" else Path("")
+    return java, javac, home
+
+
 def resolve_java_runtime(cell: MatrixCell) -> Dict[str, str]:
     """Resolve and verify the Java toolchain required by ``cell``.
 
@@ -636,22 +654,11 @@ def resolve_java_runtime(cell: MatrixCell) -> Dict[str, str]:
     if not required and re.search(r"(?:jdk|java)[-_ ]?(?:version[-_ ]?)?(?:8|11|17|21)",
                                  str(cell.precondition or ""), re.I):
         required = str(cell.precondition)
-    if cell.java_home:
-        home = Path(cell.java_home).expanduser().resolve()
-        java_bin = home / "bin" / "java"
-        javac_bin = home / "bin" / "javac"
-    elif cell.java_bin:
-        java_bin = _resolve_executable(cell.java_bin, "java")
-        if java_bin is None:
-            return {"available": "false", "status": RUNTIME_UNAVAILABLE,
-                    "reason": "java_bin unavailable: %s" % cell.java_bin,
-                    "required_runtime": required}
-        javac_bin = java_bin.parent / "javac"
-        home = java_bin.parent.parent if java_bin.parent.name == "bin" else Path("")
-    else:
-        java_bin = _resolve_executable("", "java")
-        javac_bin = _resolve_executable("", "javac")
-        home = java_bin.parent.parent if java_bin and java_bin.parent.name == "bin" else Path("")
+    java_bin, javac_bin, home = select_java_executables(cell.java_home, cell.java_bin)
+    if cell.java_bin and not cell.java_home and java_bin is None:
+        return {"available": "false", "status": RUNTIME_UNAVAILABLE,
+                "reason": "java_bin unavailable: %s" % cell.java_bin,
+                "required_runtime": required}
 
     if java_bin is None or not java_bin.exists() or not os.access(str(java_bin), os.X_OK):
         return {"available": "false", "status": RUNTIME_UNAVAILABLE,

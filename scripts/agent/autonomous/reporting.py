@@ -88,6 +88,29 @@ def run_round(ctx: AutoCtx, round_no: int) -> Dict[str, Any]:
     if report:
         return {"next_candidates": [], **report}
 
+    from ..orchestrator.run_identity import RunManifest, bind_round
+    from ..orchestrator.work_budget import WorkBudgetExceeded
+    try:
+        manifest = RunManifest.collect(
+            ctx.root, ctx.cfg, round_no, budget=ctx.work_budget,
+            source_root=_target_source_scope(ctx)[0],
+            execution_options={"driver": "autonomous", "offline": ctx.offline,
+                               "max_candidates": ctx.max_candidates,
+                               "fuzz_budget": ctx.fuzz_budget, "fuzz_seed": ctx.fuzz_seed,
+                               "fuzz_force": ctx.fuzz_force,
+                               "fuzz_skip_minimize": ctx.fuzz_skip_minimize})
+        ctx.run_manifest_sha256 = bind_round(store, manifest)
+    except (OSError, TypeError, ValueError, WorkBudgetExceeded) as exc:
+        error = {"status": "invalid-run-identity", "error": str(exc),
+                 "claim_status": "not-a-finding"}
+        ctx.write_artifact(round_no, "S0", "run-identity-status.json", error)
+        print("[round-%02d] refusing run identity: %s" % (round_no, exc))
+        return {"next_candidates": [], **error}
+
+    hint_record = store.read_artifact("S1", "api-hint.json")
+    if isinstance(hint_record, dict) and isinstance(hint_record.get("api_hint"), str):
+        ctx._learned_api_hint = hint_record["api_hint"]
+
     try:
         source_root, _source_dirs = _target_source_scope(ctx)
         register_active_audit(
@@ -209,7 +232,7 @@ def run_round(ctx: AutoCtx, round_no: int) -> Dict[str, Any]:
     if report:
         return {**report, "next_candidates": []}
 
-    if not ctx.cfg.api_hint:
+    if not ctx.api_hint:
         learn_api_hint(ctx, round_no)
         report = timebox_report("S1.5", "S1")
         if report:
@@ -1523,7 +1546,6 @@ def main(argv: Optional[List[str]] = None) -> int:
                     reasoning_effort=args.reasoning_effort)
     if args.lang:
         cfg.output_lang = args.lang
-    needs_api_hint = not cfg.api_hint
     ctx = AutoCtx(ROOT, cfg, llm, offline=args.offline,
                   max_candidates=args.max_candidates, max_rounds=args.max_rounds,
                   fuzz_budget=args.fuzz_budget, fuzz_seed=args.fuzz_seed,
@@ -1531,21 +1553,11 @@ def main(argv: Optional[List[str]] = None) -> int:
                   fuzz_skip_minimize=args.fuzz_skip_minimize,
                   force=args.force)
     rounds_done = run_loop(ctx, args.round)
-    if needs_api_hint and cfg.api_hint and args.config:
-        cfg_path = ROOT / args.config
-        if cfg_path.exists():
-            try:
-                d = json.loads(cfg_path.read_text(encoding="utf-8"))
-                d["api_hint"] = cfg.api_hint
-                cfg_path.write_text(json.dumps(d, indent=2, ensure_ascii=False),
-                                    encoding="utf-8")
-            except (OSError, UnicodeError, ValueError, TypeError) as exc:
-                print("[S1.5] could not persist learned api_hint: %s" % exc)
     print("\n==== autonomous round summary ====")
     print("rounds done: %d" % len(rounds_done))
     print("llm usage: %s" % json.dumps(llm.usage.to_dict(), ensure_ascii=False))
     incomplete_statuses = {
-        "invalid-round-budget", "invalid-round-guard",
+        "invalid-round-budget", "invalid-round-guard", "invalid-run-identity",
         "stopped-at-round-deadline", "stopped-llm-budget-exhausted",
         "stopped-source-scan-incomplete", "s4-timebox-exhausted",
         "failed-unhandled-error",

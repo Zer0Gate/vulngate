@@ -195,6 +195,7 @@ class AutoCtx:
             root / "state" / cfg.name / "cache" /
             "candidate-source-snippets-v1.json")
         self._api_hint_attempted = False
+        self._learned_api_hint = ""
         self._round_budget_record: Optional[Dict[str, Any]] = None
         self.work_budget: Optional[WorkBudget] = None
 
@@ -206,6 +207,11 @@ class AutoCtx:
 
         return float(round_budget_snapshot(self._round_budget_record)
                      ["remaining_seconds"])
+
+    @property
+    def api_hint(self) -> str:
+        """Operator hint or round-derived guidance, without rewriting config."""
+        return self.cfg.api_hint or self._learned_api_hint
 
     def source_scan_timeout(self) -> int:
         """Clamp prompt-source scans to both config and active round budget."""
@@ -306,7 +312,6 @@ def _scope_block(ctx: "AutoCtx", limit: int = 4000) -> str:
         return ""
     return ("\n\n[目标项目安全边界 —— 官方 SECURITY 文档/范围规则，"
             "必须作为候选筛选与审计的硬约束]\n%s" % text[:limit])
-
 
 
 

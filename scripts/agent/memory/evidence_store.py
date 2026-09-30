@@ -277,6 +277,29 @@ class EvidenceStore:
     def write_json(self, relative: str | Path, data: Any) -> Path:
         return self._write(relative, public_json(data))
 
+    def write_json_once(self, relative: str | Path, data: Any) -> Path:
+        """Publish a complete private record without replacing an earlier one.
+
+        Hard-link publication is atomic across concurrent controllers. The
+        loser reads the winner; no partially written destination is exposed.
+        """
+        parts = self._parts(relative)
+        with self._directory(parts[:-1], create=True) as parent:
+            temporary = ".evidence-%s.tmp" % uuid.uuid4().hex
+            fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                         0o600, dir_fd=parent)
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                    stream.write(public_json(data))
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                os.link(temporary, parts[-1], src_dir_fd=parent, dst_dir_fd=parent,
+                        follow_symlinks=False)
+                os.fsync(parent)
+            finally:
+                os.unlink(temporary, dir_fd=parent)
+        return self.root.joinpath(*parts)
+
     def write_text(self, relative: str | Path, text: str) -> Path:
         # A serialized JSON document must not bypass the structured policy.
         try:

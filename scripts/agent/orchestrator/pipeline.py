@@ -13,6 +13,7 @@ Hard gates are enforced between stages:
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import sys
 from pathlib import Path
@@ -81,6 +82,18 @@ def _conclusions(ctx: StageContext, summaries: Dict[str, Any]) -> Dict[str, str]
 
 
 def run_round(ctx: StageContext, force: bool = False, only: Optional[str] = None) -> None:
+    # Scheduled/enriched candidates are derived round state, not a rewrite of
+    # the operator's config identity. Keep the original config for later calls.
+    operator_config = ctx.config
+    ctx._run_identity_refused = False
+    ctx.config = copy.deepcopy(operator_config)
+    try:
+        _run_round(ctx, force, only)
+    finally:
+        ctx.config = operator_config
+
+
+def _run_round(ctx: StageContext, force: bool = False, only: Optional[str] = None) -> None:
     stages = list(STAGES)
     if only:
         if only not in STAGES:
@@ -126,6 +139,21 @@ def run_round(ctx: StageContext, force: bool = False, only: Optional[str] = None
         llm_tokens=getattr(ctx.llm, "max_tokens_total", None))
     if ctx.llm is not None and hasattr(ctx.llm, "set_work_budget"):
         ctx.llm.set_work_budget(ctx.work_budget)
+    if not round_budget_snapshot(round_budget)["expired"]:
+        from .run_identity import RunManifest, bind_round
+        from .work_budget import WorkBudgetExceeded
+        try:
+            manifest = RunManifest.collect(
+                ctx.workspace, ctx.config, ctx.round_no, budget=ctx.work_budget,
+                execution_options={"driver": "pipeline", "offline": ctx.offline})
+            bind_round(ctx.store, manifest)
+        except (OSError, TypeError, ValueError, WorkBudgetExceeded) as exc:
+            ctx._run_identity_refused = True
+            ctx.store.write_artifact("S0", "run-identity-status.json", {
+                "status": "invalid-run-identity", "error": str(exc),
+                "claim_status": "not-a-finding"})
+            print("[pipeline] refusing run identity: %s" % exc)
+            return
     try:
         source_root = workspace_target_root(ctx.workspace, ctx.target)
         register_active_audit(
@@ -571,7 +599,7 @@ def main(argv: Optional[list] = None) -> int:
                         workspace, args.target, args.round, root=source_root)
             except (OSError, TypeError, ValueError) as exc:
                 print("[pipeline] could not release active-audit guard: %s" % exc)
-    return 0
+    return 2 if getattr(ctx, "_run_identity_refused", False) else 0
 
 
 if __name__ == "__main__":

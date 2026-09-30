@@ -1,5 +1,56 @@
 # VulnGate 整改续接记录（2026-09-29）
 
+## 2026-10-01 增量：R06 Run Manifest/checkpoint 身份门禁
+
+延续已验证源码，不重做 R02。已确认上一文档 HEAD `f0b3819` 的 CI
+`36753671936` 全部完成 SUCCESS；本批实现基线就是该提交。
+本节与源码候选一同提交；精确候选 SHA 请以
+`git log -1 --format=%H -- scripts/agent/orchestrator/run_identity.py` 读取。
+本节记录时尚未提交/推送候选，因此没有本候选对应的运行中 CI/job，不用
+上一 HEAD 的成功证明新增代码已远端验收。后续以精确新 HEAD 查询 run。
+
+本批完成：create-once 私有 Manifest、操作员配置与实际源码根/字节身份、
+显式 PoC/JAR/历史输入、部署 PAYLOAD 共用工具身份、已有安装树校验、
+镜像 ID 与共用引擎选择、默认/已声明 Java/javac 字节身份、policy/版本。
+pipeline 和 autonomous 在 checkpoint 读取前校验，并拒绝无身份旧轮次、
+父摘要不匹配或身份漂移；`--force` 不能覆盖身份。保留旧 checkpoint
+反序列化检查；缺失 artifact 的读取不创建 stage 目录。两个 CLI 身份拒绝
+返回非零码。调度候选和学习 api_hint 保留为派生状态，不回写操作员配置。
+文件/接口与限制见 `docs/RUN-IDENTITY.md` 和 `schemas/run-manifest.json`。
+
+修复前真实控制器反例：改变 scope_constraints 后 `--stage S8` 仍执行；
+修复后 source/config/tool/image/PoC/Java 漂移与 force、无绑定/错误绑定等
+反例被拒绝，同一身份 stage-only/full resume、候选恢复和下游失效仍通过。
+一轮独立候选审阅确认源码根猜测、PoC 漏绑定、引擎选择差异、Java 字节缺口、
+学习配置漂移和 CLI 错误成功码；已逐项核对并新增回归。未重新派审。
+
+最终本地：852 项（82.1s）成功，4 项 live 在 macOS 明确 skip；
+Ruff、mypy（7 个安全模块）、compileall、diff-check 成功。
+当前 main 保护读回仍为 test/security required、1 approval、enforce_admins=true；
+PR #8 OPEN/DRAFT/REVIEW_REQUIRED。未合并、发布或重装插件。
+
+R06 仍 **partial**：直接 stage/helper/matrix 入口、cells 与 fallback/sequential
+convergence、parallel challenge/receipt、S4/S8/report/ledger 全链父身份未接入；
+镜像 ID 到 launch 固定、实际 backend/完整 runtime 依赖闭包与派生 lane、
+源码/工具校验到使用冻结也未完成。摘要不是 observer 来源证明，R07 不能省略。
+R01–R12 其余状态仍见 REMEDIATION-PLAN；完整目标 active。
+
+下一步先验收本候选新 HEAD 的 CI/CodeQL；再沿同一身份门禁接入 matrix
+与 build.py 的两个 runner 发布/恢复路径及 `converge_s4_cells`，同时设计
+独立可验证的产物父摘要，不直接改写候选 keyed dict/list 的 public 形状。
+`cli/runtime.py` 的 PoC `--manifest` 含义必须保留；其单独执行还缺目标配置，
+应显式提供/读取已绑定完整 round，不伪造完整身份。
+回执入口在 `cli/evidence.py`，只读 inspect 与执行证据接受必须分离。
+
+```sh
+git status --short --branch
+git log -1 --format=%H -- scripts/agent/orchestrator/run_identity.py
+gh pr view 8 --json headRefOid,isDraft,state,reviewDecision,statusCheckRollup
+gh run list --branch Zer0Gate/vulngate-release-1.3.0 --limit 5
+PYTHONPATH=scripts /tmp/vulngate-vault.bQGImB/bin/python -m unittest discover -s tests -t tests -q
+PYTHONPATH=scripts:tests /tmp/vulngate-vault.bQGImB/bin/python -m unittest test_run_identity -q
+```
+
 ## 2026-10-01 增量：R02 健康检查与 backend 清理候选（最新断点）
 
 ### 最新已验证状态（优先于本节下方失败/候选历史）

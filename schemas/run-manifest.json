@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vulngate.local/schemas/run-manifest-v1.json",
+  "title": "Create-once VulnGate round identity (not evidence attestation)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "identity", "manifest_sha256", "claim_status"],
+  "properties": {
+    "schema_version": {"const": "vulngate-run-manifest-v1"},
+    "manifest_sha256": {"$ref": "#/$defs/digest"},
+    "claim_status": {"const": "not-a-finding"},
+    "identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["target", "round", "workspace_digest", "vulngate_version", "vulngate_commit", "plugin_manifest_sha256", "tool_tree_sha256", "python", "os", "sandbox_backend", "sandbox_policy_version", "resource_policy_version", "evidence_policy_version", "novelty_policy_version", "source_policy_version", "storage_policy_version", "config_digest", "execution_options_digest", "source_revision", "input_digest", "images", "runtime_executables_digest"],
+      "properties": {
+        "target": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,95}$"},
+        "round": {"type": "integer", "minimum": 1, "maximum": 1000000},
+        "workspace_digest": {"$ref": "#/$defs/digest"},
+        "vulngate_version": {"type": "string", "minLength": 1},
+        "vulngate_commit": {"$ref": "#/$defs/revision"},
+        "plugin_manifest_sha256": {"$ref": "#/$defs/digest"},
+        "tool_tree_sha256": {"$ref": "#/$defs/digest"},
+        "python": {"type": "string", "minLength": 1},
+        "os": {"type": "string", "minLength": 1},
+        "sandbox_backend": {"type": "string", "minLength": 1},
+        "sandbox_policy_version": {"type": "string", "minLength": 1},
+        "resource_policy_version": {"type": "string", "minLength": 1},
+        "evidence_policy_version": {"type": "string", "minLength": 1},
+        "novelty_policy_version": {"type": "string", "minLength": 1},
+        "source_policy_version": {"type": "string", "minLength": 1},
+        "storage_policy_version": {"type": "string", "minLength": 1},
+        "config_digest": {"$ref": "#/$defs/digest"},
+        "execution_options_digest": {"$ref": "#/$defs/digest"},
+        "input_digest": {"$ref": "#/$defs/digest"},
+        "runtime_executables_digest": {"$ref": "#/$defs/digest"},
+        "source_revision": {
+          "type": "object", "additionalProperties": false,
+          "required": ["commit", "root_digest", "scope_digest", "tree_sha256"],
+          "properties": {
+            "commit": {"$ref": "#/$defs/revision"},
+            "root_digest": {"$ref": "#/$defs/digest"},
+            "scope_digest": {"$ref": "#/$defs/digest"},
+            "tree_sha256": {"$ref": "#/$defs/digest"}
+          }
+        },
+        "images": {
+          "type": "array",
+          "items": {
+            "type": "object", "additionalProperties": false,
+            "required": ["engine", "reference_digest", "image_id"],
+            "properties": {
+              "engine": {"enum": ["docker", "podman"]},
+              "reference_digest": {"$ref": "#/$defs/digest"},
+              "image_id": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+            }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "revision": {"type": "string", "pattern": "^(non-git|[0-9a-f]{40,64})$"}
+  }
+}

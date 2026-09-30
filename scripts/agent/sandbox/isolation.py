@@ -462,6 +462,23 @@ class ContainerBackend(IsolationBackend):
         self._launch_pending = False
 
 
+def select_container_engine(raw: Any) -> Tuple[str, str, str]:
+    """Shared, non-executing selection for provenance and actual launch.
+
+    An inspect failure must not switch the manifest to a different engine
+    from the one launch would select.
+    """
+    config = raw if isinstance(raw, dict) else {}
+    requested = str(config.get("isolation_backend", "auto") or "auto").strip().lower()
+    image = str(config.get("isolation_image", "") or "").strip()
+    candidates = [requested] if requested in {"docker", "podman"} else ["docker", "podman"]
+    for name in candidates:
+        executable = shutil.which(name)
+        if executable and image:
+            return name, executable, image
+    return "", "", image
+
+
 def detect_isolation_backend(workspace: Path, raw: Any) -> Tuple[Optional[IsolationBackend], IsolationDescriptor]:
     """Resolve a concrete, available backend or return an unavailable record.
 
@@ -475,12 +492,10 @@ def detect_isolation_backend(workspace: Path, raw: Any) -> Tuple[Optional[Isolat
     backend: IsolationBackend
 
     if requested in {"docker", "podman", "container"} or image:
-        candidates = [requested] if requested in {"docker", "podman"} else ["docker", "podman"]
-        for name in candidates:
-            executable = shutil.which(name)
-            if executable and image:
-                backend = ContainerBackend(executable, image)
-                return backend, backend.descriptor
+        _name, container_executable, selected_image = select_container_engine(config)
+        if container_executable:
+            backend = ContainerBackend(container_executable, selected_image)
+            return backend, backend.descriptor
         return None, IsolationDescriptor(
             backend="container", version="unavailable", available=False,
             network="unknown", filesystem="unknown",

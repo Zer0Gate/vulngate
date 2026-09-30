@@ -11,10 +11,10 @@
 | --- | --- | --- |
 | R01 | 新 PR；稳定 test/security 门禁；矩阵失败/取消/跳过阻断；审核合并 | partial：PR #8；1270221 的四组回归、test/security 及独立 CodeQL 均通过，open 告警为空；PR 仍为草稿、review required，合并/发布未完成 |
 | R02 | 服务与 PoC 统一隔离生命周期；启动前限制；容器/cgroup 清理；真实环境压力与失败测试 | partial：源码 `f9836f0` 已推送，817 项本地通过（4 live skip）；run `36752932751` 四组矩阵/security/test 及独立 CodeQL 全绿，real-isolation job 真跑 4 项无 skip，验证健康隔离/限额/capabilities 与超时/清理失败重试。前两轮真实失败已修补并复验。PoC/服务统一 backend、observer 对接、非 root 变体、完整压力/断连/迟到创建和崩溃恢复未完成，不能关闭整个 R02 |
-| R03 | 每次请求预留调用/token；网络与空响应 retry；并发；未知计费；deadline；成本 unknown | validated-local：12 项专项、731 项全量（Python 3.13）；Ruff/mypy/compileall 通过；远端矩阵待通过 |
-| R04 | 安装事务、故障恢复、并发；不可变工具快照；旧线程不静默混版 | validated-local：内容摘要版本目录、并发锁、持久化事务/恢复、启用后树校验；18 项专项和 748 项全量（Python 3.13）通过。远端矩阵、正式包实际激活及旧线程行为仍待验收；见 INSTALLATION.md |
+| R03 | 每次请求预留调用/token；网络与空响应 retry；并发；未知计费；deadline；成本 unknown | validated-source-tests：12 项专项、731 项当时全量通过；源码已包含在 f0b3819 的四组远端回归成功结果中。此证据是逻辑/回归测试，不虚构真实 provider 的计费测量或发布状态 |
+| R04 | 安装事务、故障恢复、并发；不可变工具快照；旧线程不静默混版 | validated-source-tests：内容摘要版本目录、并发锁、持久化事务/恢复、启用后树校验；18 项专项和 748 项当时全量通过，源码已包含在 f0b3819 的四组远端回归成功结果中。正式包实际激活及旧线程行为仍待验收；见 INSTALLATION.md |
 | R05 | 普通证据安全序列化；raw vault 默认关、权限与期限；错误路径敏感信息测试 | partial：普通 JSON/矩阵/CLI/账本共用投影与私有原子写入已推送，S4 policy v13；raw vault 默认关、1–30 天独立期限、0700/0600、可选 Fernet、显式清理及 CLI 固定状态回执均已推送；1270221 的远端矩阵、CodeQL 通过。旧产物、剩余自由文本及真包验收未完成，见 EVIDENCE-STORAGE.md |
-| R06 | Run Manifest；树/配置/目标/镜像/policy 身份绑定；续跑漂移拒绝 | planned |
+| R06 | Run Manifest；树/配置/目标/镜像/policy 身份绑定；续跑漂移拒绝 | partial：pipeline/autonomous 共用 create-once Manifest 与 checkpoint 父身份门禁，实际源码根/字节、显式 PoC/JAR、配置、工具树、已声明 Java 可执行文件、镜像 ID/policy 绑定；852 项本地成功，4 live skip，Ruff/mypy(7 模块)通过。一轮独立审阅的具体问题已加回归并修补。当前源码候选的远端 CI 尚待新 HEAD；直接 matrix、cells/convergence/receipts、report 全链与校验到使用冻结仍未完成；见 RUN-IDENTITY.md |
 | R07 | claim/observer/scope/predicate/controls；目标自写数据、无关 PID、截断不误确认或排除 | partial：HTTP 连接固定声明的数字 loopback、Host 由声明生成、TLS>=1.2 且校验 fixture 信任；异常连接清理。完整 observer 来源/归因/截断验收仍待完成 |
 | R08 | 真 backend CI；风险模块分项 branch coverage；F821；依赖审查；失败样本验证 | partial：F821 已恢复；Ubuntu real-isolation 与固定 test 聚合门禁已实际执行，两次失败确实阻断，f9836f0 的 4 项真实 backend 验收通过；分项覆盖与依赖审查仍未完成 |
 | R09 | 审核提交的不可变 tag；Release 归档/SBOM/checksum/provenance；干净安装 | planned |

@@ -17,6 +17,9 @@ class CheckpointStore:
         self._store = EvidenceStore(workspace)
         self.target = target
         self.round_no = round_no
+        # Set only by the execution controller after a full current-identity
+        # comparison. Plain stores retain legacy inspection compatibility.
+        self.manifest_sha256: Optional[str] = None
         self.base = workspace / "state" / target / ("round-%02d" % round_no)
         self._store.directory(self.base.relative_to(workspace))
 
@@ -28,13 +31,21 @@ class CheckpointStore:
     def load_stage(self, stage: str) -> Optional[Dict[str, Any]]:
         f = self.stage_file(stage)
         try:
-            return json.loads(self._store.read_text(f.relative_to(self._input_workspace)))
+            data = json.loads(self._store.read_text(f.relative_to(self._input_workspace)))
         except FileNotFoundError:
             return None
+        if (self.manifest_sha256 is not None and stage != "S0"
+                and (not isinstance(data, dict)
+                     or data.get("manifest_sha256") != self.manifest_sha256)):
+            from ..orchestrator.run_identity import RunIdentityError
+            raise RunIdentityError("checkpoint is not bound to current run identity: " + stage)
+        return data
 
     def save_stage(self, stage: str, data: Dict[str, Any]) -> Path:
         data.setdefault("stage", stage)
         data["updated_at"] = datetime.now().isoformat(timespec="seconds")
+        if self.manifest_sha256 is not None:
+            data["manifest_sha256"] = self.manifest_sha256
         f = self.stage_file(stage)
         self._atomic_write_json(f, data)
         return f
@@ -67,7 +78,10 @@ class CheckpointStore:
         self._store.write_text(path.relative_to(self._input_workspace), content)
 
     def read_artifact(self, stage: str, name: str) -> Any:
-        f = self.artifact_path(stage, name)
+        # Inspection is genuinely non-creating, including missing stage dirs.
+        self.stage_file(stage)
+        self._store._parts(name)
+        f = self.base / stage / name
         try:
             text = self._store.read_text(f.relative_to(self._input_workspace))
         except FileNotFoundError:

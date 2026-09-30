@@ -14,8 +14,8 @@ def learn_api_hint(ctx: AutoCtx, round_no: int = 1) -> str:
     """S1.5: LLM reads the target's entry classes and writes an API hint
     (package names, entry signatures, default security switches) so later
     PoC generation does not mix up library versions (e.g. Jackson 2 vs 3)."""
-    if ctx.cfg.api_hint:
-        return ctx.cfg.api_hint
+    if ctx.api_hint:
+        return ctx.api_hint
     if ctx._api_hint_attempted:
         return ""
     ctx._api_hint_attempted = True
@@ -53,7 +53,7 @@ def learn_api_hint(ctx: AutoCtx, round_no: int = 1) -> str:
         print("[S1.5] api_hint learning failed: %s" % exc)
         return ""
     if hint:
-        ctx.cfg.api_hint = hint
+        ctx._learned_api_hint = hint
         ctx.write_artifact(round_no, "S1", "api-hint.json", {"api_hint": hint})
     return hint
 
@@ -340,7 +340,7 @@ def propose_candidates(ctx: AutoCtx, round_no: int,
         'chain_components(可选数组；例如 ["request-body", "parser", "authorization", "file-write"]), '
         'novelty_keywords(数组,上游检索关键词), cvss_vector(可选)。\n'
         "只输出 JSON：{\"candidates\":[...]}"
-        % (ctx.cfg.name, versions, ctx.cfg.api_hint or "（无）",
+        % (ctx.cfg.name, versions, ctx.api_hint or "（无）",
            _fmt_entries(ctx.cfg.entry_points), src_block or "（无源码片段）",
            _scope_block(ctx),
            coverage_block + "\n\n" if coverage_block else "",
@@ -383,5 +383,4 @@ def propose_candidates(ctx: AutoCtx, round_no: int,
     ctx.write_artifact(round_no, "S2", "candidate-matrix.json",
                        {"candidate_count": len(selected), "matrix": selected})
     return selected
-
 
