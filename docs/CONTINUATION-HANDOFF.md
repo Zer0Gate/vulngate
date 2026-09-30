@@ -2,6 +2,17 @@
 
 ## 2026-10-01 增量：R02 健康检查与 backend 清理候选（最新断点）
 
+后续真实 CI `36750396860`：四组回归及 security 成功，但 real-isolation job
+`110007230705` 的 bubblewrap 三个场景失败；真实容器就绪/健康超时/清理失败
+重试场景通过。固定 test 按预期失败，未跳过失败用例。
+上游 bubblewrap 的 info-fd 在 mount/chroot 完成前发出，PID 消息本身不足以
+证明 sandbox 已就绪。新增只由 sandbox 内固定隔离 Python 启动器发出的
+pipe 握手，收到后才打开 namespace/root/cwd；命令在此启动器关闭管道后 exec。
+增加“仅 PID 消息不得打开上下文”的反例，40 项聚焦测试、Ruff/mypy 通过。
+service policy 升 v4、S4 policy 升 v16；本增量仍需新 CI 证明真实 Linux 就绪。
+失败日志只给出 PermissionError，因此该时序缺陷虽由上游源码证实，尚不能
+断言是远端失败的唯一原因。独立审查仍未完成。
+
 本文件所在提交继续 `5045c8c`，不重做已有整改。托管命令式健康检查不再
 使用宿主 CommandRunner：Linux 从 bubblewrap info-fd 获取实际 sandbox 子 PID，
 固定 namespace/root/cwd 句柄后进入同一 cgroup；容器通过本轮随机 label

@@ -46,7 +46,7 @@ from .redaction import redact_text
 
 SERVICE_SCHEMA_VERSION = "service-lifecycle-v8-isolated-healthcheck"
 PROCESS_SCHEMA_VERSION = "service-processes-v6-backend-cleanup"
-SERVICE_ISOLATION_POLICY_VERSION = "managed-service-isolation-backend-v3-isolated-health"
+SERVICE_ISOLATION_POLICY_VERSION = "managed-service-isolation-backend-v4-ready-handshake"
 CLAIM_STATUS = "not-a-finding"
 MAX_COMMAND_TOKENS = 32
 MAX_ENV_KEYS = 32

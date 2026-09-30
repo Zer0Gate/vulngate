@@ -193,6 +193,8 @@ class LinuxBubblewrapBackend(IsolationBackend):
         self.working_dir: Optional[Path] = None
         self._info_reader: Optional[int] = None
         self._info_writer: Optional[int] = None
+        self._ready_reader: Optional[int] = None
+        self._ready_writer: Optional[int] = None
         self._context_fds: Dict[str, int] = {}
         self._leader_pid: Optional[int] = None
         self.descriptor = IsolationDescriptor(
@@ -214,6 +216,7 @@ class LinuxBubblewrapBackend(IsolationBackend):
             raise PermissionError("backend already owns a service context")
         self.workspace, self.working_dir = workspace.resolve(), working_dir.resolve()
         self._info_reader, self._info_writer = os.pipe()
+        self._ready_reader, self._ready_writer = os.pipe()
         # Do not bind the host root.  Only standard runtime paths are exposed;
         # the audit workspace is the sole writable target tree.
         args = [
@@ -237,11 +240,18 @@ class LinuxBubblewrapBackend(IsolationBackend):
             # the host environment wholesale.
             args.extend(["--setenv", str(key), _sandbox_path(str(value), workspace)])
         args.append("--")
+        # info-fd is emitted before child mount/chroot setup. A fixed isolated
+        # interpreter signals only after bwrap has entered its final sandbox.
+        # Do not use a target-writable ready file or arbitrary service marker.
+        args.extend(["/usr/bin/python3", "-I", "-S", "-c",
+                     "import os,sys; fd=int(sys.argv[1]); os.write(fd,b'1'); "
+                     "os.close(fd); os.execvpe(sys.argv[2],sys.argv[2:],os.environ)",
+                     str(self._ready_writer)])
         args.extend(_sandbox_command(command, workspace))
         return args
 
     def start_fds(self) -> Tuple[int, ...]:
-        return (self._info_writer,) if self._info_writer is not None else ()
+        return tuple(fd for fd in (self._info_writer, self._ready_writer) if fd is not None)
 
     def after_start(self, pid: int) -> Optional[int]:
         if self._info_reader is None or self._info_writer is None:
@@ -267,6 +277,16 @@ class LinuxBubblewrapBackend(IsolationBackend):
             child_pid = info["child-pid"]
             if type(child_pid) is not int or child_pid <= 0:
                 raise ValueError("invalid child PID")
+            if self._ready_reader is None or self._ready_writer is None:
+                raise PermissionError("bubblewrap setup pipe is missing")
+            os.close(self._ready_writer)
+            self._ready_writer = None
+            if (not select.select([self._ready_reader], [], [], max(
+                    0, deadline - time.monotonic()))[0]
+                    or os.read(self._ready_reader, 2) != b"1"):
+                raise PermissionError("bubblewrap sandbox setup was not established")
+            os.close(self._ready_reader)
+            self._ready_reader = None
             # Pin the actual sandbox namespaces, root and cwd. A later PID
             # reuse cannot redirect nsenter into an unrelated host process.
             for name in ("user", "mnt", "net", "pid", "ipc", "uts"):
@@ -310,9 +330,11 @@ class LinuxBubblewrapBackend(IsolationBackend):
         return args + _sandbox_command(command, self.workspace)
 
     def close(self) -> None:
-        fds = [*self._context_fds.values(), self._info_reader, self._info_writer]
+        fds = [*self._context_fds.values(), self._info_reader, self._info_writer,
+               self._ready_reader, self._ready_writer]
         self._context_fds.clear()
         self._info_reader = self._info_writer = self._leader_pid = None
+        self._ready_reader = self._ready_writer = None
         for fd in fds:
             if fd is not None:
                 os.close(fd)

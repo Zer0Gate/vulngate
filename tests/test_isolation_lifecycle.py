@@ -85,6 +85,19 @@ class IsolationLifecycleTests(unittest.TestCase):
             with self.assertRaises(PermissionError):
                 backend.health_command(["sh", "health.sh"], 123, {})
 
+    def test_linux_info_identity_alone_cannot_pin_host_setup_context(self):
+        with tempfile.TemporaryDirectory() as td, patch(
+                "agent.sandbox.isolation._version", return_value="test"):
+            backend = LinuxBubblewrapBackend("/usr/bin/bwrap")
+            backend.wrap_command(["sh", "service.sh"], Path(td), Path(td), {})
+            os.write(backend._info_writer, b'{"child-pid":123}')
+            # No sandbox helper ran; closing the parent writer yields EOF.
+            with patch("agent.sandbox.isolation.os.open") as open_context:
+                with self.assertRaisesRegex(PermissionError, "setup was not established"):
+                    backend.after_start(123)
+            open_context.assert_not_called()
+            backend.close()
+
     def test_linux_health_uses_pinned_namespace_root_and_cwd_handles(self):
         with tempfile.TemporaryDirectory() as td, patch(
                 "agent.sandbox.isolation._version", return_value="test"), patch(
