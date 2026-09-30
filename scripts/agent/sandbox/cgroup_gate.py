@@ -43,12 +43,15 @@ def main() -> int:
                        or "\x00" in key or not isinstance(value, str)
                        or "\x00" in value for key, value in env.items())):
             return 125
+        os.close(fd)
+        fd = -1
         os.execvpe(command[0], command, env)
     except (OSError, ValueError, UnicodeError, TypeError):
         return 125
     finally:
         try:
-            os.close(fd)
+            if fd >= 0:
+                os.close(fd)
         except OSError:
             pass
     return 125

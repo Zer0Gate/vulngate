@@ -23,6 +23,9 @@ import hashlib
 import os
 import time
 import uuid
+import json
+import re
+import select
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple, TypeAlias
 
@@ -58,6 +61,18 @@ def _contained(path: Path, root: Path) -> bool:
 IsolationDescriptor: TypeAlias = IsolationState
 
 
+def _sandbox_path(value: str, workspace: Path) -> str:
+    """Translate a whole workspace path, never substrings in payload data."""
+    path = Path(value)
+    if path.is_absolute() and _contained(path, workspace):
+        return "/workspace/" + str(path.resolve().relative_to(workspace.resolve()))
+    return value
+
+
+def _sandbox_command(command: Sequence[str], workspace: Path) -> List[str]:
+    return [_sandbox_path(str(value), workspace) for value in command]
+
+
 class IsolationBackend:
     """Minimal backend contract used by :class:`ServiceLifecycle`."""
 
@@ -67,15 +82,25 @@ class IsolationBackend:
                      working_dir: Path, env: Dict[str, str]) -> List[str]:
         raise NotImplementedError
 
-    def health_command(self, command: Sequence[str], pid: Optional[int]) -> List[str]:
-        """Return a command that runs inside the service's network namespace.
+    def launcher_env(self) -> Dict[str, str]:
+        return {"PATH": os.defpath, "LC_ALL": "C"}
 
-        A backend may return the original command for a health probe that does
-        not need namespace entry.  Linux namespace backends use ``nsenter``
-        when it is available; callers still treat a failed probe as an
-        inconclusive precondition rather than a negative result.
-        """
-        return list(command)
+    def start_fds(self) -> Tuple[int, ...]:
+        return ()
+
+    def after_start(self, pid: int) -> Optional[int]:
+        return None
+
+    def health_fds(self) -> Tuple[int, ...]:
+        return ()
+
+    def health_command(self, command: Sequence[str], pid: Optional[int],
+                       env: Dict[str, str]) -> List[str]:
+        """Produce an isolated health invocation; never fall back to the host."""
+        raise PermissionError("backend has no isolated healthcheck implementation")
+
+    def close(self) -> None:
+        """Release this backend's resources, raising if cleanup is unverified."""
 
     def prepare_cgroup(self, workspace: Path, name: str) -> Optional["CgroupV2Controller"]:
         return None
@@ -130,7 +155,12 @@ class CgroupV2Controller:
         if str(int(pid)) not in (self.path / "cgroup.procs").read_text(
                 encoding="ascii").split():
             raise OSError("cgroup membership readback failed")
-        self.attached_pid = int(pid)
+        if self.attached_pid is None:
+            self.attached_pid = int(pid)
+
+    def contains(self, pid: int) -> bool:
+        return str(int(pid)) in (self.path / "cgroup.procs").read_text(
+            encoding="ascii").split()
 
     def snapshot(self) -> Dict[str, Any]:
         return {"backend": "cgroup-v2", "path_digest": hashlib.sha256(
@@ -159,6 +189,12 @@ class CgroupV2Controller:
 class LinuxBubblewrapBackend(IsolationBackend):
     def __init__(self, executable: str):
         self.executable = executable
+        self.workspace: Optional[Path] = None
+        self.working_dir: Optional[Path] = None
+        self._info_reader: Optional[int] = None
+        self._info_writer: Optional[int] = None
+        self._context_fds: Dict[str, int] = {}
+        self._leader_pid: Optional[int] = None
         self.descriptor = IsolationDescriptor(
             backend="linux-bubblewrap",
             version=_version(executable),
@@ -174,6 +210,10 @@ class LinuxBubblewrapBackend(IsolationBackend):
 
     def wrap_command(self, command: Sequence[str], workspace: Path,
                      working_dir: Path, env: Dict[str, str]) -> List[str]:
+        if self._info_reader is not None or self._context_fds:
+            raise PermissionError("backend already owns a service context")
+        self.workspace, self.working_dir = workspace.resolve(), working_dir.resolve()
+        self._info_reader, self._info_writer = os.pipe()
         # Do not bind the host root.  Only standard runtime paths are exposed;
         # the audit workspace is the sole writable target tree.
         args = [
@@ -182,6 +222,7 @@ class LinuxBubblewrapBackend(IsolationBackend):
             "--unshare-uts", "--unshare-net", "--proc", "/proc",
             "--dev", "/dev", "--tmpfs", "/tmp", "--dir", "/workspace",
             "--bind", str(workspace), "/workspace",
+            "--info-fd", str(self._info_writer), "--clearenv",
         ]
         for path in ("/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc"):
             if Path(path).exists():
@@ -194,16 +235,87 @@ class LinuxBubblewrapBackend(IsolationBackend):
             # Environment keys/values have already passed the lifecycle
             # allowlist.  Bubblewrap receives them explicitly, never inherit
             # the host environment wholesale.
-            args.extend(["--setenv", str(key), str(value)])
+            args.extend(["--setenv", str(key), _sandbox_path(str(value), workspace)])
         args.append("--")
-        args.extend(str(item) for item in command)
+        args.extend(_sandbox_command(command, workspace))
         return args
 
-    def health_command(self, command: Sequence[str], pid: Optional[int]) -> List[str]:
-        nsenter = shutil.which("nsenter")
-        if nsenter and pid:
-            return [nsenter, "-t", str(int(pid)), "-n", "--", *map(str, command)]
-        return list(command)
+    def start_fds(self) -> Tuple[int, ...]:
+        return (self._info_writer,) if self._info_writer is not None else ()
+
+    def after_start(self, pid: int) -> Optional[int]:
+        if self._info_reader is None or self._info_writer is None:
+            raise PermissionError("bubblewrap identity pipe is missing")
+        os.close(self._info_writer)
+        self._info_writer = None
+        chunks = bytearray()
+        deadline = time.monotonic() + 5
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0 or not select.select([self._info_reader], [], [], remaining)[0]:
+                raise PermissionError("bubblewrap identity timed out")
+            chunk = os.read(self._info_reader, 4096)
+            if not chunk:
+                break
+            chunks.extend(chunk)
+            if len(chunks) > 8192:
+                raise PermissionError("bubblewrap identity exceeded limit")
+        os.close(self._info_reader)
+        self._info_reader = None
+        try:
+            info = json.loads(chunks)
+            child_pid = info["child-pid"]
+            if type(child_pid) is not int or child_pid <= 0:
+                raise ValueError("invalid child PID")
+            # Pin the actual sandbox namespaces, root and cwd. A later PID
+            # reuse cannot redirect nsenter into an unrelated host process.
+            for name in ("user", "mnt", "net", "pid", "ipc", "uts"):
+                fd = os.open("/proc/%d/ns/%s" % (child_pid, name),
+                             os.O_RDONLY | os.O_CLOEXEC)
+                self._context_fds[name] = fd
+                if os.fstat(fd).st_ino == os.stat("/proc/self/ns/" + name).st_ino:
+                    raise PermissionError("bubblewrap did not isolate " + name)
+            flags = getattr(os, "O_PATH", os.O_RDONLY) | os.O_DIRECTORY | os.O_CLOEXEC
+            root = os.open("/proc/%d/root" % child_pid, flags)
+            self._context_fds["root"] = root
+            if (os.fstat(root).st_dev, os.fstat(root).st_ino) == (
+                    os.stat("/").st_dev, os.stat("/").st_ino):
+                raise PermissionError("bubblewrap root is the host root")
+            if self.workspace is None or self.working_dir is None:
+                raise PermissionError("bubblewrap workspace identity is missing")
+            cwd = _sandbox_path(str(self.working_dir), self.workspace)
+            self._context_fds["cwd"] = os.open("/proc/%d/root%s" % (child_pid, cwd), flags)
+            self._leader_pid = pid
+            return child_pid
+        except (ValueError, KeyError, TypeError) as exc:
+            raise PermissionError("invalid bubblewrap identity") from exc
+
+    def health_fds(self) -> Tuple[int, ...]:
+        return tuple(self._context_fds.values())
+
+    def health_command(self, command: Sequence[str], pid: Optional[int],
+                       env: Dict[str, str]) -> List[str]:
+        nsenter = shutil.which("nsenter", path=os.defpath)
+        if (not nsenter or pid != self._leader_pid or self.workspace is None
+                or set(self._context_fds) != {"user", "mnt", "net", "pid", "ipc", "uts", "root", "cwd"}):
+            raise PermissionError("verified bubblewrap health context is unavailable")
+        options = {"user": "user", "mnt": "mount", "net": "net", "pid": "pid",
+                   "ipc": "ipc", "uts": "uts", "root": "root", "cwd": "wd"}
+        args = [nsenter, "--preserve-credentials"]
+        args.extend("--%s=/proc/self/fd/%d" % (options[name], fd)
+                    for name, fd in self._context_fds.items())
+        args.extend(["--", "/usr/bin/env", "-i"])
+        args.extend("%s=%s" % (key, _sandbox_path(value, self.workspace))
+                    for key, value in sorted(env.items()))
+        return args + _sandbox_command(command, self.workspace)
+
+    def close(self) -> None:
+        fds = [*self._context_fds.values(), self._info_reader, self._info_writer]
+        self._context_fds.clear()
+        self._info_reader = self._info_writer = self._leader_pid = None
+        for fd in fds:
+            if fd is not None:
+                os.close(fd)
 
     def prepare_cgroup(self, workspace: Path, name: str) -> Optional[CgroupV2Controller]:
         return CgroupV2Controller.create(workspace, name)
@@ -213,6 +325,10 @@ class ContainerBackend(IsolationBackend):
     def __init__(self, executable: str, image: str):
         self.executable = executable
         self.image = image
+        self.workspace: Optional[Path] = None
+        self.working_dir: Optional[Path] = None
+        self._run_token: Optional[str] = None
+        self._container_id: Optional[str] = None
         self.descriptor = IsolationDescriptor(
             backend="%s-runtime-container" % Path(executable).name,
             version=_version(executable),
@@ -226,21 +342,83 @@ class ContainerBackend(IsolationBackend):
 
     def wrap_command(self, command: Sequence[str], workspace: Path,
                      working_dir: Path, env: Dict[str, str]) -> List[str]:
+        if self._run_token is not None:
+            raise PermissionError("container backend already owns a service")
+        self.workspace, self.working_dir = workspace.resolve(), working_dir.resolve()
+        self._run_token = uuid.uuid4().hex
         relative = "."
         if _contained(working_dir, workspace):
             relative = "/workspace/" + str(working_dir.relative_to(workspace))
         args = [
             self.executable, "run", "--rm", "--init", "--network", "none",
+            "--name", "vulngate-" + self._run_token,
+            "--label", "vulngate.run=" + self._run_token,
             "--read-only", "--memory", "2g", "--cpus", "4",
             "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
             "--pids-limit", "128", "--tmpfs", "/tmp:rw,noexec,nosuid,nodev", "-v",
             "%s:/workspace:rw" % workspace, "-w", relative,
         ]
         for key, value in sorted(env.items()):
-            args.extend(["-e", "%s=%s" % (key, value)])
+            args.extend(["-e", "%s=%s" % (key, _sandbox_path(value, workspace))])
         args.append(self.image)
-        args.extend(str(item) for item in command)
+        args.extend(_sandbox_command(command, workspace))
         return args
+
+    def launcher_env(self) -> Dict[str, str]:
+        env = super().launcher_env()
+        for key in ("HOME", "XDG_RUNTIME_DIR"):
+            if os.environ.get(key):
+                env[key] = os.environ[key]
+        return env
+
+    def _owned_containers(self) -> List[str]:
+        if self._run_token is None:
+            return []
+        result = subprocess.run(
+            [self.executable, "ps", "--all", "--no-trunc", "--filter",
+             "label=vulngate.run=" + self._run_token, "--format", "{{.ID}}"],
+            env=self.launcher_env(), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            text=True, timeout=5, check=False)
+        ids = result.stdout.split()
+        if result.returncode != 0 or any(not re.fullmatch(r"[0-9a-f]{64}", value) for value in ids):
+            raise OSError("container ownership could not be verified")
+        return ids
+
+    def after_start(self, pid: int) -> Optional[int]:
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            ids = self._owned_containers()
+            if len(ids) == 1:
+                self._container_id = ids[0]
+                return None
+            if len(ids) > 1:
+                raise PermissionError("container ownership is ambiguous")
+            time.sleep(0.05)
+        raise PermissionError("container identity was not established")
+
+    def health_command(self, command: Sequence[str], pid: Optional[int],
+                       env: Dict[str, str]) -> List[str]:
+        if not self._container_id or self.workspace is None or self.working_dir is None:
+            raise PermissionError("verified container health context is unavailable")
+        args = [self.executable, "exec", "--workdir",
+                _sandbox_path(str(self.working_dir), self.workspace)]
+        for key, value in sorted(env.items()):
+            args.extend(["--env", "%s=%s" % (key, _sandbox_path(value, self.workspace))])
+        return args + [self._container_id, *_sandbox_command(command, self.workspace)]
+
+    def close(self) -> None:
+        if self._run_token is None:
+            return
+        # Use engine-owned labels and immutable IDs, never a target-writable
+        # cidfile or the PID of the disposable Docker/Podman client.
+        ids = self._owned_containers()
+        for container_id in ids:
+            subprocess.run([self.executable, "rm", "--force", container_id],
+                           env=self.launcher_env(), stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL, timeout=5, check=False)
+        if self._owned_containers():
+            raise OSError("owned container survived teardown")
+        self._container_id = self._run_token = None
 
 
 def detect_isolation_backend(workspace: Path, raw: Any) -> Tuple[Optional[IsolationBackend], IsolationDescriptor]:

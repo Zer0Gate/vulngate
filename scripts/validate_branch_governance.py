@@ -56,12 +56,13 @@ def validate(root: Path) -> Dict[str, Any]:
                          workflow, re.MULTILINE | re.DOTALL)
     body = test_job.group(1) if test_job else ""
     required_gate = (
-        "name: test", "if: ${{ always() }}", "needs: [regression]",
+        "name: test", "if: ${{ always() }}", "needs: [regression, real-isolation]",
         "REGRESSION_RESULT: ${{ needs.regression.result }}",
-        'run: test "$REGRESSION_RESULT" = success',
+        "ISOLATION_RESULT: ${{ needs.real-isolation.result }}",
+        'run: test "$REGRESSION_RESULT" = success && test "$ISOLATION_RESULT" = success',
     )
     if "matrix:" in body or any(item not in body for item in required_gate):
-        raise ValueError("test must be a stable fail-closed regression aggregate")
+        raise ValueError("test must be a stable fail-closed regression/isolation aggregate")
 
     codeowners = (root / ".github" / "CODEOWNERS").read_text(encoding="utf-8")
     if not re.search(r"^/scripts/agent/sandbox/\s+@", codeowners, re.MULTILINE):

@@ -19,7 +19,8 @@ from agent.tools.service_lifecycle import (  # noqa: E402
     _loopback_connect_host,
 )
 from agent.sandbox.approval import ApprovalGate  # noqa: E402
-from agent.sandbox.isolation import CgroupV2Controller, IsolationDescriptor  # noqa: E402
+from agent.sandbox.isolation import (CgroupV2Controller, IsolationBackend,
+                                     IsolationDescriptor)  # noqa: E402
 from agent.sandbox.runner import prepare_posix_resource_limited_command  # noqa: E402
 
 
@@ -56,7 +57,7 @@ def _nc_http_start_command(root, port):
     return ["sh", str(fixture), str(port)]
 
 
-class _TestIsolationBackend:
+class _TestIsolationBackend(IsolationBackend):
     """Explicitly injected unit-test backend; production never uses this."""
 
     descriptor = IsolationDescriptor(
@@ -68,8 +69,9 @@ class _TestIsolationBackend:
     def wrap_command(self, command, workspace, working_dir, env):
         return list(command)
 
-    def health_command(self, command, pid):
-        return list(command)
+    def health_command(self, command, pid, env):
+        return ["/usr/bin/env", "-i", *("%s=%s" % item for item in sorted(env.items())),
+                *command]
 
 
 class _GateTestCgroup:
@@ -79,14 +81,18 @@ class _GateTestCgroup:
         self.fail_close = fail_close
         self.marker_seen_before_attach = None
         self.attached_pid = None
+        self.attached_pids = []
         self.close_called = False
 
     def attach(self, pid):
         time.sleep(0.2)
-        self.marker_seen_before_attach = self.marker.exists()
+        if self.marker_seen_before_attach is None:
+            self.marker_seen_before_attach = self.marker.exists()
         if self.fail_attach:
             raise OSError("injected cgroup attach failure")
-        self.attached_pid = pid
+        self.attached_pids.append(pid)
+        if self.attached_pid is None:
+            self.attached_pid = pid
 
     def snapshot(self):
         return {"backend": "cgroup-v2", "attached_pid": self.attached_pid,
@@ -225,6 +231,47 @@ class ServiceLifecycleTests(unittest.TestCase):
             self.assertTrue(cgroup.close_called)
             self.assertEqual("complete", stopped["cgroup_cleanup_status"])
 
+    def test_backend_identity_failure_does_not_claim_enforced_isolation(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            lifecycle = self._gated_fixture(root, _GateTestCgroup(root / "target-started"))
+            with patch.object(lifecycle.isolation_backend, "after_start",
+                              side_effect=PermissionError("identity unavailable")):
+                failed = lifecycle.ensure_ready()
+            self.assertFalse(failed["ready"], failed)
+            for key in ("network_isolation", "filesystem_isolation"):
+                self.assertFalse(failed[key]["enforced"], failed)
+                self.assertEqual("isolation-unverified", failed[key]["status"])
+            self.assertIsNone(lifecycle.process)
+
+    def test_managed_healthcheck_joins_service_cgroup_without_host_runner(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            cgroup = _GateTestCgroup(root / "target-started")
+            lifecycle = self._gated_fixture(root, cgroup)
+            with patch.object(lifecycle.runner, "run",
+                              side_effect=AssertionError("host runner invoked")):
+                ready = lifecycle.ensure_ready()
+            try:
+                self.assertTrue(ready["ready"], ready)
+                self.assertGreater(len(cgroup.attached_pids), 1)
+                self.assertEqual("managed-service-backend", ready["health"]["execution_context"])
+            finally:
+                lifecycle.stop()
+
+    def test_approval_binds_environment_values_not_only_keys(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            cgroup = _GateTestCgroup(root / "target-started")
+            lifecycle = self._gated_fixture(root, cgroup, {"APP_MODE": "approved"})
+            approved_digest = lifecycle.snapshot()["config_digest"]
+            lifecycle.env["APP_MODE"] = "changed-after-approval"
+            self.assertNotEqual(approved_digest, lifecycle.snapshot()["config_digest"])
+            denied = lifecycle.ensure_ready()
+            self.assertEqual("policy-denied", denied["status"])
+            self.assertIsNone(lifecycle.process)
+            self.assertEqual([], cgroup.attached_pids)
+
     def test_preflight_and_gate_do_not_execute_target_env_before_attach(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
@@ -240,7 +287,8 @@ class ServiceLifecycleTests(unittest.TestCase):
             original_attach = cgroup.attach
 
             def check_before_attach(pid):
-                self.assertFalse(hook_marker.exists(), "gate ran target environment")
+                if not cgroup.attached_pids:
+                    self.assertFalse(hook_marker.exists(), "gate ran target environment")
                 original_attach(pid)
 
             with patch.object(cgroup, "attach", side_effect=check_before_attach):

@@ -76,11 +76,13 @@ class HardeningControlTests(unittest.TestCase):
         command = next(line.split("run: ", 1)[1] for line in gate.splitlines()
                        if "run: " in line)
         for result in ("success", "failure", "cancelled", "skipped", ""):
-            with self.subTest(result=result):
-                completed = subprocess.run(
-                    ["bash", "-c", command],
-                    env={"REGRESSION_RESULT": result}, check=False)
-                self.assertEqual(result == "success", completed.returncode == 0)
+            for isolation in ("success", "failure", "cancelled", "skipped", ""):
+                with self.subTest(result=result, isolation=isolation):
+                    completed = subprocess.run(
+                        ["bash", "-c", command],
+                        env={"REGRESSION_RESULT": result, "ISOLATION_RESULT": isolation},
+                        check=False)
+                    self.assertEqual(result == isolation == "success", completed.returncode == 0)
 
     def test_governance_rejects_matrix_job_as_required_aggregate(self):
         with tempfile.TemporaryDirectory() as td:
@@ -88,7 +90,7 @@ class HardeningControlTests(unittest.TestCase):
             shutil.copytree(ROOT / ".github", root / ".github")
             workflow = root / ".github/workflows/ci.yml"
             workflow.write_text(workflow.read_text().replace(
-                "needs: [regression]", "needs: []"))
+                "needs: [regression, real-isolation]", "needs: []"))
             with self.assertRaisesRegex(ValueError, "fail-closed"):
                 validate_branch_governance.validate(root)
 

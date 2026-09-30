@@ -44,9 +44,9 @@ from ..sandbox.runner import (CommandRunner, minimal_poc_env,
 from .redaction import redact_text
 
 
-SERVICE_SCHEMA_VERSION = "service-lifecycle-v7-gated-cgroup-start"
-PROCESS_SCHEMA_VERSION = "service-processes-v5-cgroup-cleanup"
-SERVICE_ISOLATION_POLICY_VERSION = "managed-service-isolation-backend-v2-gated-start"
+SERVICE_SCHEMA_VERSION = "service-lifecycle-v8-isolated-healthcheck"
+PROCESS_SCHEMA_VERSION = "service-processes-v6-backend-cleanup"
+SERVICE_ISOLATION_POLICY_VERSION = "managed-service-isolation-backend-v3-isolated-health"
 CLAIM_STATUS = "not-a-finding"
 MAX_COMMAND_TOKENS = 32
 MAX_ENV_KEYS = 32
@@ -237,6 +237,7 @@ class ServiceLifecycle:
         self.process: Optional[subprocess.Popen] = None
         self.registry_pid: Optional[int] = None
         self._managed_service_started = False
+        self._isolation_established = False
         self._tree_monitor_stop = threading.Event()
         self._tree_monitor_thread: Optional[threading.Thread] = None
         self._tracked_process_start_times: Dict[int, str] = {}
@@ -257,6 +258,9 @@ class ServiceLifecycle:
         return output
 
     def _validate_command(self, command: Sequence[str]) -> Optional[str]:
+        if any(not key or "=" in key or "\x00" in key or "\x00" in value
+               for key, value in self.env.items()):
+            return "invalid lifecycle environment"
         if not command:
             return "lifecycle command missing or contains unsupported shell syntax"
         for index, token in enumerate(command):
@@ -324,6 +328,7 @@ class ServiceLifecycle:
             "isolation_backend": self.isolation_descriptor.as_dict(),
             **self._isolation_contract("pending"),
             "env_keys": sorted(self.env),
+            "env_digest": _digest(self.env)[:24],
             "healthcheck": self._health_url_info() if self.health_url
             else {"configured": bool(self.health_command), "kind": "command" if self.health_command else "none"},
             "expected_status": list(self.expected_status),
@@ -335,6 +340,7 @@ class ServiceLifecycle:
                 "stop": self.stop_command, "health_url": self.health_url,
                 "health_command": self.health_command, "working_dir": str(self.working_dir),
                 "env_keys": sorted(self.env), "expected_status": self.expected_status,
+                "env_digest": _digest(self.env)[:24],
                 "stop_external": self.stop_external,
                 "isolation_policy": SERVICE_ISOLATION_POLICY_VERSION,
                 "isolation_backend": self.isolation_descriptor.as_dict(),
@@ -346,13 +352,15 @@ class ServiceLifecycle:
     def _isolation_contract(self, status: str) -> Dict[str, Any]:
         if self._managed_service_started:
             descriptor = self.isolation_descriptor
-            isolation_status = "isolated"
+            isolation_status = "isolated" if self._isolation_established else "isolation-unverified"
             reason = ("managed target service runs under %s (%s)" %
-                      (descriptor.backend, descriptor.version))
+                      (descriptor.backend, descriptor.version)
+                      if self._isolation_established else
+                      "managed service launch attempted but backend identity was not verified")
             result = {
                 "policy": SERVICE_ISOLATION_POLICY_VERSION,
                 "status": isolation_status,
-                "enforced": True,
+                "enforced": self._isolation_established,
                 "backend": descriptor.backend,
                 "backend_version": descriptor.version,
                 "reason": reason,
@@ -499,7 +507,8 @@ class ServiceLifecycle:
         self._state = result
         return result
 
-    def _start_cgroup_gated(self, command: List[str], env: Dict[str, str]) -> subprocess.Popen:
+    def _start_cgroup_gated(self, command: List[str], env: Dict[str, str],
+                            inherited_fds: Tuple[int, ...] = ()) -> subprocess.Popen:
         """Attach a trusted, blocked launcher before it receives target argv."""
         if self.cgroup_controller is None:
             raise PermissionError("cgroup gate requires a prepared controller")
@@ -516,7 +525,7 @@ class ServiceLifecycle:
                 cwd=str(self.working_dir),
                 env={"PATH": os.defpath, "LC_ALL": "C"},
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                text=True, start_new_session=True, pass_fds=(reader,))
+                text=True, start_new_session=True, pass_fds=(reader, *inherited_fds))
             os.close(reader)
             reader = -1
             self.cgroup_controller.attach(int(process.pid))
@@ -557,6 +566,62 @@ class ServiceLifecycle:
         self.resource_limits.setdefault("cgroup_v2", {})["cleanup_status"] = "complete"
         self.cgroup_controller = None
         return True
+
+    def _close_backend(self) -> bool:
+        if self.isolation_backend is None:
+            return True
+        try:
+            self.isolation_backend.close()
+        except (OSError, PermissionError, subprocess.TimeoutExpired) as exc:
+            self.resource_limit_error = "backend cleanup failed: %s" % type(exc).__name__
+            self.resource_limits["backend_cleanup_status"] = "incomplete"
+            return False
+        self.resource_limits["backend_cleanup_status"] = "complete"
+        return True
+
+    def _managed_healthcheck(self, command: List[str]) -> Dict[str, Any]:
+        backend = self.isolation_backend
+        if backend is None or self.process is None:
+            raise PermissionError("managed healthcheck has no service identity")
+        self.approval.assert_allowed("service_lifecycle", "isolated service healthcheck")
+        env = minimal_poc_env({**self.env, "VULNGATE_SERVICE_HEALTHCHECK": "true"})
+        invocation = backend.health_command(command, int(self.process.pid), env)
+        # The trusted host wrapper receives no target hooks. Its hard limits
+        # are applied before nsenter/container-client and target execution.
+        invocation, _limits = prepare_posix_resource_limited_command(
+            invocation, backend.launcher_env(),
+            cpu_seconds_per_process=self.health_timeout + 1,
+            preflight_timeout=min(5, self.health_timeout))
+        work_budget = getattr(self.execution_budget, "work_budget", None)
+        if work_budget is not None:
+            work_budget.acquire_process()
+        if self.cgroup_controller is not None:
+            process = self._start_cgroup_gated(
+                invocation, backend.launcher_env(), backend.health_fds())
+        else:
+            process = subprocess.Popen(
+                invocation, cwd=str(self.working_dir), env=backend.launcher_env(),
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                start_new_session=True, pass_fds=backend.health_fds())
+        try:
+            returncode = process.wait(timeout=self.health_timeout)
+            return {"kind": "command", "ready": returncode == 0,
+                    "returncode": returncode, "timed_out": False,
+                    "execution_context": "managed-service-backend"}
+        except subprocess.TimeoutExpired:
+            try:
+                process.kill()
+            except ProcessLookupError:
+                pass
+            try:
+                process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                self.resource_limit_error = "healthcheck client did not exit after kill"
+            # ensure_ready tears down the whole service isolation unit on
+            # timeout, including descendants the health client cannot reap.
+            return {"kind": "command", "ready": False, "timed_out": True,
+                    "status": "healthcheck-timeout",
+                    "execution_context": "managed-service-backend"}
 
     def _start_process_tree_monitor(self) -> None:
         limits = self.resource_limits.get("process_tree_rss")
@@ -828,13 +893,12 @@ class ServiceLifecycle:
                     connection.close()
         if self.health_command:
             command = self._resolve_command_paths(self.health_command)
-            if self._managed_service_started and self.isolation_backend is not None:
-                command = self.isolation_backend.health_command(
-                    command, int(self.process.pid) if self.process is not None else None)
             error = self._validate_command(command)
             if error:
                 return {"kind": "command", "ready": False, "status": "policy-denied"}
             try:
+                if self._managed_service_started:
+                    return self._managed_healthcheck(command)
                 result = self.runner.run(
                     command, cwd=self.working_dir,
                     env_extra={**self.env, "VULNGATE_SERVICE_HEALTHCHECK": "true"},
@@ -844,7 +908,8 @@ class ServiceLifecycle:
                 return {"kind": "command", "ready": result.returncode == 0,
                         "returncode": result.returncode,
                         "timed_out": result.timed_out}
-            except (OSError, PermissionError) as exc:
+            except (OSError, PermissionError, subprocess.TimeoutExpired,
+                    WorkBudgetExceeded) as exc:
                 return {"kind": "command", "ready": False,
                         "error": type(exc).__name__}
         return {"kind": "none", "ready": False, "status": "healthcheck-missing"}
@@ -921,11 +986,7 @@ class ServiceLifecycle:
         # Host-side bwrap/container clients must not inherit target startup
         # hooks. The backend passes service_env explicitly to its child via
         # --setenv/-e only after it has established the isolation boundary.
-        launcher_env = {"PATH": os.defpath, "LC_ALL": "C"}
-        if self.isolation_descriptor.backend.endswith("runtime-container"):
-            for key in ("HOME", "XDG_RUNTIME_DIR"):
-                if os.environ.get(key):
-                    launcher_env[key] = os.environ[key]
+        launcher_env = self.isolation_backend.launcher_env()
         try:
             limited_command, self.resource_limits = (
                 prepare_posix_resource_limited_command(
@@ -967,28 +1028,37 @@ class ServiceLifecycle:
             if work_budget is not None:
                 work_budget.acquire_process()
             if self.cgroup_controller is not None:
-                self.process = self._start_cgroup_gated(isolated_command, launcher_env)
+                self.process = self._start_cgroup_gated(
+                    isolated_command, launcher_env, self.isolation_backend.start_fds())
             else:
                 self.process = subprocess.Popen(
                     isolated_command,
                     cwd=str(self.working_dir),
                     env=launcher_env,
                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                    text=True, start_new_session=True)
+                    text=True, start_new_session=True,
+                    pass_fds=self.isolation_backend.start_fds())
             self._managed_service_started = True
+            target_pid = self.isolation_backend.after_start(int(self.process.pid))
+            if (target_pid is not None and self.cgroup_controller is not None
+                    and not self.cgroup_controller.contains(target_pid)):
+                raise PermissionError("sandbox process is outside the service cgroup")
+            self._isolation_established = True
             self.registry_pid = int(self.process.pid)
             self._register_process(self.registry_pid)
             self._start_process_tree_monitor()
         except WorkBudgetExceeded as exc:
-            cleanup_complete = self._close_cgroup()
+            stop_info = self.stop(include_external=False)
+            cleanup_complete = stop_info.get("status") != "cleanup-incomplete"
             if cleanup_complete:
                 self._release_lock()
             return self._base_result(
                 "budget-exhausted" if cleanup_complete else "cleanup-incomplete",
                 False, health=existing,
                 reason="shared process budget exhausted: %s" % str(exc)[:160])
-        except (OSError, PermissionError) as exc:
-            cleanup_complete = self._close_cgroup()
+        except (OSError, PermissionError, subprocess.TimeoutExpired) as exc:
+            stop_info = self.stop(include_external=False)
+            cleanup_complete = stop_info.get("status") != "cleanup-incomplete"
             if cleanup_complete:
                 self._release_lock()
             return self._base_result("run-failed" if cleanup_complete
@@ -1018,6 +1088,11 @@ class ServiceLifecycle:
                     if self.resource_limit_error else
                     "managed service exited before healthcheck")
             last_health = self._probe()
+            if last_health.get("timed_out"):
+                stop_info = self.stop()
+                return self._base_result("precondition-unavailable", False,
+                                         health=last_health, stop=stop_info,
+                                         reason="isolated service healthcheck timed out")
             if last_health.get("ready"):
                 return self._base_result("started-ready", True, health=last_health,
                                          process_managed=True)
@@ -1028,7 +1103,7 @@ class ServiceLifecycle:
                                  stop=stop_info,
                                  reason="healthcheck timeout")
 
-    def stop(self) -> Dict[str, Any]:
+    def stop(self, *, include_external: bool = True) -> Dict[str, Any]:
         stopped = False
         stop_status = "not-managed"
         managed_pid = self.registry_pid
@@ -1044,7 +1119,7 @@ class ServiceLifecycle:
                     stop_status = "resource-monitor-error"
             stopped = (self.process.poll() is not None
                        and stop_status not in {"cleanup-incomplete", "stop-timeout"})
-        elif (self.stop_external and self.stop_command and self.configured
+        elif (include_external and self.stop_external and self.stop_command and self.configured
               and self.enabled):
             error = self._validate_command(self.stop_command)
             if error:
@@ -1067,6 +1142,14 @@ class ServiceLifecycle:
         tree_limits = self.resource_limits.get("process_tree_rss")
         had_cgroup = self.cgroup_controller is not None
         cgroup_cleaned = self._close_cgroup()
+        backend_cleaned = self._close_backend()
+        had_container = (self._managed_service_started and
+                         self.isolation_descriptor.backend.endswith("runtime-container"))
+        if had_container and backend_cleaned and isinstance(tree_limits, dict):
+            tree_limits["cleanup_status"] = "complete"
+            tree_limits["cleanup_via"] = "container-engine"
+            if stop_status == "cleanup-incomplete":
+                stop_status = "stopped"
         if had_cgroup and cgroup_cleaned and isinstance(tree_limits, dict):
             # The kernel-wide cgroup kill covers descendants missed by PID
             # sampling, without claiming the runtime monitor was healthy.
@@ -1091,7 +1174,7 @@ class ServiceLifecycle:
             # PID sampling can be inconclusive after the leader exits, but a
             # successfully removed cgroup proves its descendants are gone.
             stop_status = "stopped"
-        if not cgroup_cleaned:
+        if not cgroup_cleaned or not backend_cleaned:
             stop_status = "cleanup-incomplete"
         still_active = (stop_status in {"cleanup-incomplete", "stop-timeout"}
                         or (isinstance(tree_limits, dict)
@@ -1113,6 +1196,7 @@ class ServiceLifecycle:
                 tree_limits.get("cleanup_status", "")
                 if isinstance(tree_limits, dict) else ""),
             "process_registry_error": self.registry_error,
+            "backend_cleanup_status": self.resource_limits.get("backend_cleanup_status", ""),
             "cgroup_cleanup_status": (
                 self.resource_limits.get("cgroup_v2", {}).get("cleanup_status", "")
                 if had_cgroup else "not-applicable"),

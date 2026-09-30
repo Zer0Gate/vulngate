@@ -1,5 +1,43 @@
 # VulnGate 整改续接记录（2026-09-29）
 
+## 2026-10-01 增量：R02 健康检查与 backend 清理候选（最新断点）
+
+本文件所在提交继续 `5045c8c`，不重做已有整改。托管命令式健康检查不再
+使用宿主 CommandRunner：Linux 从 bubblewrap info-fd 获取实际 sandbox 子 PID，
+固定 namespace/root/cwd 句柄后进入同一 cgroup；容器通过本轮随机 label
+核实 immutable container ID，再在该容器执行健康命令。缺少身份/nsenter
+时拒绝执行，不回退宿主。workspace 绝对参数/环境路径映射为 `/workspace`；
+宿主 launcher 不继承目标启动钩子。授权摘要纳入环境变量值；后端身份失败
+不会被写成 enforced。停止须核实本轮容器消失，失败保留锁与重试状态。
+S4 evidence policy 升 v15，service policy 升 v3，旧 checkpoint 不静默复用。
+
+最终本地 Python 3.13 全量：813 项、70.6 秒，成功但 **4 项真实后端测试跳过**；
+Ruff、mypy（6 个安全模块）、branch governance validator、diff-check 通过。
+不能把上述结果当成真实 Linux/container 验收。本机为 macOS，Docker socket
+仍不存在。新增 `tests/test_isolation_backend_live.py` 和专用 Ubuntu
+`real-isolation` job：真实 namespace/cgroup/容器、宿主 canary 不可见、
+cwd/env 映射、脱离 session 后代、健康超时整单元停止、清理失败保留锁与重试。
+显式启用后工具缺失不得 skip；固定 `test` 汇总要求 regression 和
+real-isolation 均 success，失败/取消/跳过反例已本地验证。
+
+独立只读候选审查 `01a0f342-4284-7140-a466-5166c69c182f` 尚在运行，
+未取得终审结果。此提交供 PR #8 远端验收，不是 fixed/validated 声明。
+恢复时先读该审查结果及本提交 CI，处理实际失败后再验收；不要重启仍活着的
+审查或仅因观察超时当作完成。R02 的 PoC/服务统一 backend、完整压力/断连
+测试仍未完成，R01–R12 全目标继续 active；未合并、发布或重装插件。
+
+已重新核实上一 HEAD `15723b9` 的 run `36658221586` 全部 workflow jobs 成功，
+PR merge ref open CodeQL 告警为 0。main 保护读回：test/security required、
+1 approval、enforce_admins=true；PR #8 仍 draft/review required。这些是旧 HEAD
+证据，不得替代本候选的新增真实隔离验收。
+
+```sh
+git status --short --branch
+gh pr view 8 --json headRefOid,isDraft,state,reviewDecision,statusCheckRollup
+gh run list --branch Zer0Gate/vulngate-release-1.3.0 --limit 5
+PYTHONPATH=scripts /tmp/vulngate-vault.bQGImB/bin/python -m unittest discover -s tests -t tests -q
+```
+
 ## 2026-09-30 增量：R02 cgroup 启动/清理止损（最新断点）
 
 `5045c8c97ac335f13650b5ba6c9dc868cf1333ea` 已提交推送至 PR #8 的
