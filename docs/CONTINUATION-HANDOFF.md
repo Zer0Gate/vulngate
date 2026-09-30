@@ -7,6 +7,16 @@
 读取的是 `rateLimitsByLimitId.codex.primary` 的 300 分钟窗口，不使用重置券。
 同窗口后续 heartbeat 不重复提交交接；目标保持 active，不标 complete/blocked/paused。
 
+交接后补记（北京时间 06:43）：交接提交 `86fbf237b63ff67ac4e58ec98af1e371cbcecf51`
+已推送，run `36764354582` 全部终态、FAILURE。real-isolation `110054634023` SUCCESS；
+macOS 3.10 `110054634276` 同一健康检查再次失败（852 项，112.440s，1 failure/4 skip），
+test 聚合 `110055850433` FAILURE；其余三组回归/security SUCCESS。Docker 这次通过不
+代表之前未决清理失败根因已解决。没有重跑操作或源码变更。下一步先读该 macOS job。
+额度曾达到 100%，当时 resetsAt 临时读回为 `1790804623`（同一到期边界漂移一秒，
+也视为已交接，不能据此重复交接）；随后自然重置，新窗口 `resetsAt=1790826136`
+已用 1%、剩余 99%，该新窗口未达到交接阈值。未用重置券。本补记仍只修改交接文件，
+其后产生的新文档 CI 按精确 HEAD 重新查询，不循环补记每次文档触发的 run。
+
 ### Git、提交与运行状态
 
 交接前本地 HEAD、origin branch 与 PR #8 HEAD 一致：
