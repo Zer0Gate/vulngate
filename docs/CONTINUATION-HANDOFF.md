@@ -1,6 +1,38 @@
 # VulnGate 整改续接记录（2026-09-29）
 
-## 2026-10-01 增量：R06 当前父身份与精确产物字节（远端验收中）
+## 2026-10-01 增量：R06 当前父身份与精确产物字节（源码远端已验收）
+
+### 最新验收状态（优先于下方历史记录）
+
+源码 `033351af190afe45047a9fcb0f32452a0877c278` 加测试兼容性修正
+`9c4d2e4d6f39caad373f977d0a0caaab36cd8c0c` 已推送，精确最新 HEAD 的
+run **36791962396 COMPLETED/SUCCESS**：security `110146681981`、
+macOS 3.10 `110146682320`、macOS 3.13 `110146682340`、Ubuntu 3.10
+`110146682395`、Ubuntu 3.13 `110146682500`、test 聚合 `110147430745`
+全部成功；真实隔离 `110146682281` 4 项（6.255s）OK，无 skip。
+独立 CodeQL SUCCESS，PR merge ref open alerts=0。修正后完整本地
+875 项（88.630s）OK，4 live 在 macOS skip；聚焦 85 项、Ruff/mypy
+（7 模块）/compileall/diff-check 均通过。两次源码 CI 和本地测试/watch
+均已终态，无运行中的源码测试或审阅 agent；随后仅提交文档，新文档 HEAD
+触发的 CI 须单独查询，不能用本节的成功代替。
+
+本批 outcome=fixed 仅指已核对的当前父身份/精确字节接受边界：未绑定旧文件、
+错误父、字节/路径重放、S4 别名、清单篡改和非 cell 字典均在聚焦回归拒绝；
+合法 list/dict/text、多个线程、partial/空矩阵、compile diagnostics 与报告/账本
+读回仍通过。原存储边界扩展侧车避免改变公共 payload，是共享窄门禁，不是
+observer/执行 attestation/同 UID 防伪。技能的一次候选审阅影响如历史记录所述。
+
+下一步先核对文档 HEAD CI，再继续 active attempt/spec 与 effect 精确归因。
+本轮纯内存探针已确认：cell.run_id=current-run、effect.run_id=other-run，
+同 candidate/cell 的 filesystem effect 仍被 summarize_candidate 接受（1 条），
+execution_state=executed-with-effect；没有执行目标或改文件，尚未证明最终
+S8 false-confirmation 路径，也尚未修补这一独立边界。见 build.py 的
+_trusted_observed_effects 与 Java/Shell cell_id 构造、autonomous/execution.py
+修复后 converge 调用。该问题是下一层 R06/R07，不把本批字节门禁重复做一遍。
+PR #8 OPEN/DRAFT/REVIEW_REQUIRED；main 保护 test/security required、
+1 approval、enforce_admins=true，未合并、发布、重装。完整 R01–R12 仍未完成。
+
+### Python 3.10 失败及修正（历史）
 
 源码已推送 `033351af190afe45047a9fcb0f32452a0877c278`。run `36791689233` 的
 Ubuntu 3.10 `110145804516` 与 macOS 3.10 `110145804558` 失败：新增测试
