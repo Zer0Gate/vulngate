@@ -10,13 +10,13 @@
 | ID | 工作包与验收要求 | 状态 / 证据 |
 | --- | --- | --- |
 | R01 | 新 PR；稳定 test/security 门禁；矩阵失败/取消/跳过阻断；审核合并 | partial：PR #8；1270221 的四组回归、test/security 及独立 CodeQL 均通过，open 告警为空；PR 仍为草稿、review required，合并/发布未完成 |
-| R02 | 服务与 PoC 统一隔离生命周期；启动前限制；容器/cgroup 清理；真实环境压力与失败测试 | partial：`5045c8c` 启动门控、`c638997` 健康 backend/清理及 `d87ee1f` ready 握手已推送。两轮 real-isolation/test 均失败，不能 validated；第一轮容器场景通过，第二轮 Linux 已完成身份校验但 service exited=1。审查后增量补完整授权 digest/镜像引用、root capability 清除、容器健康限额、未决创建保守清理，817 项本地通过但 4 项 live skip，最终 51 项聚焦通过；真实验收、PoC/服务统一 backend、完整压力/断连与恢复未完成 |
+| R02 | 服务与 PoC 统一隔离生命周期；启动前限制；容器/cgroup 清理；真实环境压力与失败测试 | partial：源码 `f9836f0` 已推送，817 项本地通过（4 live skip）；run `36752932751` 四组矩阵/security/test 及独立 CodeQL 全绿，real-isolation job 真跑 4 项无 skip，验证健康隔离/限额/capabilities 与超时/清理失败重试。前两轮真实失败已修补并复验。PoC/服务统一 backend、observer 对接、非 root 变体、完整压力/断连/迟到创建和崩溃恢复未完成，不能关闭整个 R02 |
 | R03 | 每次请求预留调用/token；网络与空响应 retry；并发；未知计费；deadline；成本 unknown | validated-local：12 项专项、731 项全量（Python 3.13）；Ruff/mypy/compileall 通过；远端矩阵待通过 |
 | R04 | 安装事务、故障恢复、并发；不可变工具快照；旧线程不静默混版 | validated-local：内容摘要版本目录、并发锁、持久化事务/恢复、启用后树校验；18 项专项和 748 项全量（Python 3.13）通过。远端矩阵、正式包实际激活及旧线程行为仍待验收；见 INSTALLATION.md |
 | R05 | 普通证据安全序列化；raw vault 默认关、权限与期限；错误路径敏感信息测试 | partial：普通 JSON/矩阵/CLI/账本共用投影与私有原子写入已推送，S4 policy v13；raw vault 默认关、1–30 天独立期限、0700/0600、可选 Fernet、显式清理及 CLI 固定状态回执均已推送；1270221 的远端矩阵、CodeQL 通过。旧产物、剩余自由文本及真包验收未完成，见 EVIDENCE-STORAGE.md |
 | R06 | Run Manifest；树/配置/目标/镜像/policy 身份绑定；续跑漂移拒绝 | planned |
 | R07 | claim/observer/scope/predicate/controls；目标自写数据、无关 PID、截断不误确认或排除 | partial：HTTP 连接固定声明的数字 loopback、Host 由声明生成、TLS>=1.2 且校验 fixture 信任；异常连接清理。完整 observer 来源/归因/截断验收仍待完成 |
-| R08 | 真 backend CI；风险模块分项 branch coverage；F821；依赖审查；失败样本验证 | partial：F821 已恢复。新增 Ubuntu real-isolation job 与固定 test 聚合门禁，失败/取消/跳过均阻断；当前真实后端测试尚待远端执行，分项覆盖与依赖审查仍未完成 |
+| R08 | 真 backend CI；风险模块分项 branch coverage；F821；依赖审查；失败样本验证 | partial：F821 已恢复；Ubuntu real-isolation 与固定 test 聚合门禁已实际执行，两次失败确实阻断，f9836f0 的 4 项真实 backend 验收通过；分项覆盖与依赖审查仍未完成 |
 | R09 | 审核提交的不可变 tag；Release 归档/SBOM/checksum/provenance；干净安装 | planned |
 | R10 | 三入口共享应用服务；build 等按职责拆分；同 fixture 结论一致 | planned |
 | R11 | installed/probed/enforced 能力分层；语言/分析/observer/backend 矩阵；文案校准 | planned |

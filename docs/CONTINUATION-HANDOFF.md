@@ -2,6 +2,34 @@
 
 ## 2026-10-01 增量：R02 健康检查与 backend 清理候选（最新断点）
 
+### 最新已验证状态（优先于本节下方失败/候选历史）
+
+源码 HEAD `f9836f0a8a29ad2efae8580eac2606e96d66ceb3` 已提交推送。
+最终完整本地 817 项（69.7s）成功，4 项 live 在 macOS 本地明确 skip；
+Ruff/mypy/compileall/diff-check 成功。远端 run `36752932751` 已完成 SUCCESS：
+四组 Linux/macOS Python 3.10/3.13 回归、security、固定 test 均通过；独立
+CodeQL SUCCESS，PR merge ref open alerts=0。真实隔离 job `110015860233`
+实际运行 4 项、8.0s、OK，无 skip，涵盖两个 backend 的真实就绪、隔离健康命令、
+脱离 session 后代停止、健康超时和清理失败重试；验证了 capabilities=0、
+NoNewPrivs=1、64 MiB 文件限额、真实 cgroup 成员/限额读回及容器消失。
+
+上述证据关闭本批**托管健康检查宿主执行路径与正常停止边界**的验证缺口，
+但 R02 仍 partial：PoC 与服务统一 backend、namespace 内 observer 对接、
+非 root/rootless 变体、真实 memory/pids/cpu 压力、engine 断连/迟到创建、
+崩溃后恢复/未决创建的持久化清理未全部验收。不得用 4 项 live 测试代替这些要求。
+镜像引用已绑定授权，但可移动标签的实际镜像 digest 固定仍须 R06。
+PR #8 仍 draft/review required，未合并、发布或安装；源码工作树干净。
+本次后续仅提交状态文档；文档 HEAD 的新 CI 需再次检查。
+
+下一步先核对文档 HEAD 的 CI，再按依赖推进 R06 Run Manifest
+（源码/配置/目标/镜像/policy 身份及续跑漂移拒绝），同时继续 R02 统一后端。
+具体入口：`sandbox/network_sandbox.py` 当前 PoC 仍是 macOS Seatbelt；
+`tools/build.py` 的 Java/Shell runner 在 verify/wrap_network_sandbox 及 observation
+provenance 边界使用它；`sandbox/runner.py` 负责资源和结果。不能直接让 Linux PoC
+脱离现有 observer/cell 绑定而“运行成功”，也不能绕过缺后端时的 fail closed。
+
+### 本节早期候选与失败记录（不是当前终态）
+
 独立审查已完成（同一轮，未再次派审）：确认 12 KB digest 截断、镜像引用
 未纳入授权摘要、root capability/健康进程限制缺口、迟到容器创建清理不确定。
 当前后续增量：digest 哈希完整序列化内容、授权绑定 backend 的镜像引用；
@@ -37,7 +65,7 @@ service policy 升 v4、S4 policy 升 v16；本增量仍需新 CI 证明真实 L
 失败日志只给出 PermissionError，因此该时序缺陷虽由上游源码证实，尚不能
 断言是远端失败的唯一原因。独立审查仍未完成。
 
-本文件所在提交继续 `5045c8c`，不重做已有整改。托管命令式健康检查不再
+`c638997` 继续 `5045c8c`，不重做已有整改。其候选内容：托管命令式健康检查不再
 使用宿主 CommandRunner：Linux 从 bubblewrap info-fd 获取实际 sandbox 子 PID，
 固定 namespace/root/cwd 句柄后进入同一 cgroup；容器通过本轮随机 label
 核实 immutable container ID，再在该容器执行健康命令。缺少身份/nsenter
@@ -55,7 +83,7 @@ cwd/env 映射、脱离 session 后代、健康超时整单元停止、清理失
 显式启用后工具缺失不得 skip；固定 `test` 汇总要求 regression 和
 real-isolation 均 success，失败/取消/跳过反例已本地验证。
 
-独立只读候选审查 `01a0f342-4284-7140-a466-5166c69c182f` 尚在运行，
+当时独立只读候选审查 `01a0f342-4284-7140-a466-5166c69c182f` 尚在运行，
 未取得终审结果。此提交供 PR #8 远端验收，不是 fixed/validated 声明。
 恢复时先读该审查结果及本提交 CI，处理实际失败后再验收；不要重启仍活着的
 审查或仅因观察超时当作完成。R02 的 PoC/服务统一 backend、完整压力/断连
@@ -73,7 +101,7 @@ gh run list --branch Zer0Gate/vulngate-release-1.3.0 --limit 5
 PYTHONPATH=scripts /tmp/vulngate-vault.bQGImB/bin/python -m unittest discover -s tests -t tests -q
 ```
 
-## 2026-09-30 增量：R02 cgroup 启动/清理止损（最新断点）
+## 2026-09-30 增量：R02 cgroup 启动/清理止损（历史断点）
 
 `5045c8c97ac335f13650b5ba6c9dc868cf1333ea` 已提交推送至 PR #8 的
 `Zer0Gate/vulngate-release-1.3.0`。该提交是 R02 的**部分整改**，不是完整隔离验收：
