@@ -1,5 +1,31 @@
 # VulnGate 整改续接记录（2026-09-29）
 
+## 2026-10-01 增量：嵌套硬资源限制单调收紧修复（远端待验收）
+
+延续 bc7c077，不重做 R06 checkpoint。bc7c077 的 run `36787181163` 已终态 FAILURE：
+macOS 3.10 job `110131281707` 在 `test_cgroup_gate_holds_target_until_attach_and_releases_it`
+再次 health returncode=1/timed_out=false，test 聚合 `110132313125` 失败；real-isolation
+`110131281526`、其余三矩阵和 security 通过。与前两次健康检查失败属于同一嵌套限额路径。
+
+本地确定性反例：健康目标先测 NPROC，host launcher 随后基线下降，外层先设较小硬上限，
+内层再请求较大上限，`ulimit: max user processes: cannot modify limit: Invalid argument`，
+健康返回 1。新增嵌套 readback 与实际托管健康回归在旧源码上均失败；前者也复现 NOFILE
+同类错误。CI 原日志未保留健康 stderr，不能声称已直接读到该 CI 进程的具体 ulimit 错误。
+
+修复共享资源启动器：CPU/FSIZE/NOFILE/NPROC/AS 在设置 soft/hard 前取请求值与继承 hard
+中的较小值，core 仍为 0；不提高原有上限，不忽略 setter 错误，无效读回仍 fail closed。
+资源 policy 升为 `...core0-monotone-v8`，供 Run Manifest/policy 身份拒绝旧轮次复用。
+回归读回六种 soft/hard，覆盖内层更宽/更严/相同及 NPROC、AS 两种动态基线下降；
+仍断言使用 managed-service-backend、实际 cgroup attachment 和 complete 清理。
+
+完整本地 854 项（75.100s）通过，4 项真实隔离在 macOS 明确 skip；49 项聚焦、
+Ruff/mypy（7 模块）/compileall/diff-check/内嵌 bash 语法通过。源码候选尚待提交后
+精确 HEAD 的四矩阵、real-isolation 和 CodeQL 验收，不使用旧 HEAD 成功替代。
+之前 Docker 身份发现/未决创建清理失败的根因仍未知，此补丁不宣称关闭该缺口或整个 R02。
+
+下一步先验证本候选新 HEAD CI；通过后继续 R06 的 matrix/cells/receipt/report 身份链，
+范围和兼容性要求见下方交接。没有合并、发布或插件刷新，完整整改目标 active。
+
 ## 2026-10-01 03:12 北京时间：额度交接与最新 CI 失败（当前断点）
 
 本窗口已交接：`resetsAt=1790804622`。应用实时读数五小时已用 99%、

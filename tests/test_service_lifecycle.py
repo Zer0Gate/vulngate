@@ -22,6 +22,7 @@ from agent.sandbox.approval import ApprovalGate  # noqa: E402
 from agent.sandbox.isolation import (CgroupV2Controller, IsolationBackend,
                                      IsolationDescriptor)  # noqa: E402
 from agent.sandbox.runner import prepare_posix_resource_limited_command  # noqa: E402
+from agent.sandbox import runner as resource_runner  # noqa: E402
 
 
 def _free_port():
@@ -258,6 +259,33 @@ class ServiceLifecycleTests(unittest.TestCase):
                 self.assertEqual("managed-service-backend", ready["health"]["execution_context"])
             finally:
                 lifecycle.stop()
+
+    def test_managed_healthcheck_survives_decreasing_host_baselines(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            cgroup = _GateTestCgroup(root / "target-started")
+            lifecycle = self._gated_fixture(root, cgroup)
+            try:
+                ready = lifecycle.ensure_ready()
+                self.assertTrue(ready["ready"], ready)
+                baseline, limit = resource_runner._user_process_limit()
+                vm_baseline = resource_runner._address_space_baseline_bytes()
+                cases = (("_user_process_limit", [(baseline + 1, limit + 1),
+                                                   (baseline, limit)]),
+                         ("_address_space_baseline_bytes", [vm_baseline + 1024,
+                                                            vm_baseline]))
+                for name, values in cases:
+                    with self.subTest(measurement=name), \
+                            patch.object(resource_runner, name, side_effect=values), \
+                            patch.object(lifecycle.runner, "run",
+                                         side_effect=AssertionError("host runner invoked")):
+                        health = lifecycle._probe()
+                    self.assertTrue(health["ready"], health)
+                    self.assertEqual("managed-service-backend", health["execution_context"])
+                self.assertGreater(len(cgroup.attached_pids), 2)
+            finally:
+                stopped = lifecycle.stop()
+            self.assertEqual("complete", stopped["backend_cleanup_status"])
 
     def test_approval_binds_environment_values_not_only_keys(self):
         with tempfile.TemporaryDirectory() as td:

@@ -46,7 +46,7 @@ class RunResult:
     process_tree_cleanup: Dict[str, Any] = field(default_factory=dict)
 
 
-POC_RESOURCE_POLICY_VERSION = "posix-rlimit-controller-launcher-as4g-headroom-cpu-fsize64m-nofile512-nproc128-core0-v7"
+POC_RESOURCE_POLICY_VERSION = "posix-rlimit-controller-launcher-as4g-headroom-cpu-fsize64m-nofile512-nproc128-core0-monotone-v8"
 POC_MAX_FILE_BYTES = 64 * 1024 * 1024
 POC_MAX_OPEN_FILES = 512
 POC_MAX_PROCESS_SPAWN_DELTA = 128
@@ -71,6 +71,32 @@ open_files="$3"
 user_process_limit="$4"
 address_space_kib="$5"
 shift 5
+# Namespace/container health commands can inherit a stricter profile from
+# their host client or service. Independently measured NPROC/AS baselines
+# fluctuate: never try to raise the inherited hard cap, even transiently.
+# Malformed/unsupported ulimit output fails closed under set -e.
+clamp_to_hard() {
+  case "$2" in
+    unlimited) bounded_limit="$1" ;;
+    ''|*[!0-9]*) return 1 ;;
+    *)
+      if [ "$2" -lt "$1" ]; then
+        bounded_limit="$2"
+      else
+        bounded_limit="$1"
+      fi ;;
+  esac
+}
+clamp_to_hard "$cpu_limit" "$(ulimit -H -t)"
+cpu_limit="$bounded_limit"
+clamp_to_hard "$file_blocks" "$(ulimit -H -f)"
+file_blocks="$bounded_limit"
+clamp_to_hard "$open_files" "$(ulimit -H -n)"
+open_files="$bounded_limit"
+clamp_to_hard "$user_process_limit" "$(ulimit -H -u)"
+user_process_limit="$bounded_limit"
+clamp_to_hard "$address_space_kib" "$(ulimit -H -v)"
+address_space_kib="$bounded_limit"
 ulimit -S -c 0
 ulimit -H -c 0
 ulimit -S -n "$open_files"

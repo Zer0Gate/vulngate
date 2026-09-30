@@ -1,7 +1,9 @@
 """Darwin VM layout differences must not defeat resource-limit preflight."""
 import os
+import json
 import resource
 import subprocess
+import sys
 import unittest
 from unittest.mock import patch
 
@@ -9,6 +11,38 @@ from agent.sandbox import runner
 
 
 class ResourceBaselineTests(unittest.TestCase):
+    def test_nested_launchers_never_raise_inherited_hard_limits(self):
+        # The health target and its host client are profiled separately.
+        # Process counts and Darwin VM maps can shrink between those probes.
+        _, profile = runner.prepare_posix_resource_limited_command(
+            ["true"], {}, cpu_seconds_per_process=5)
+        larger = dict(profile)
+        for key, delta in (("cpu_seconds_per_process", 1),
+                           ("max_file_bytes", 1024), ("max_open_files", 1),
+                           ("max_user_processes", 1),
+                           ("max_address_space_bytes", 1024)):
+            larger[key] += delta
+        probe = [sys.executable, "-I", "-S", "-c",
+                 "import json,resource; print(json.dumps({n:resource.getrlimit("
+                 "getattr(resource,n)) for n in ('RLIMIT_CPU','RLIMIT_FSIZE',"
+                 "'RLIMIT_NOFILE','RLIMIT_NPROC','RLIMIT_AS','RLIMIT_CORE')}))"]
+        for outer, inner in ((profile, larger), (larger, profile), (profile, profile)):
+            with self.subTest(outer_larger=outer is larger, inner_larger=inner is larger):
+                result = subprocess.run(
+                    runner._resource_limited_argv(
+                        runner._resource_limited_argv(probe, inner), outer),
+                    env={"PATH": os.defpath, "LC_ALL": "C"},
+                    capture_output=True, text=True, timeout=5, check=False)
+                self.assertEqual(0, result.returncode, result.stderr)
+                limits = json.loads(result.stdout)
+                for name, key in (("RLIMIT_CPU", "cpu_seconds_per_process"),
+                                  ("RLIMIT_FSIZE", "max_file_bytes"),
+                                  ("RLIMIT_NOFILE", "max_open_files"),
+                                  ("RLIMIT_NPROC", "max_user_processes"),
+                                  ("RLIMIT_AS", "max_address_space_bytes")):
+                    self.assertEqual([min(outer[key], inner[key])] * 2, limits[name])
+                self.assertEqual([0, 0], limits["RLIMIT_CORE"])
+
     def measure(self, values):
         results = [subprocess.CompletedProcess([], 0, str(value)) for value in values]
         with patch.object(runner.sys, "platform", "darwin"):

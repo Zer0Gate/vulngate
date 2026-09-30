@@ -40,6 +40,11 @@ M3：R09 可信发布；R10/R11/R12 小 PR 持续推进。
 
 ## 远端交付记录
 
+- 最新断点：bc7c077 的 run `36787181163` macOS 3.10 健康检查失败、test 正确阻断，
+  其余三矩阵/real-isolation/security 通过；历史全绿不能代表当前 HEAD。确定性本地反例
+  证实独立测量的 NPROC/AS 基线下降会让嵌套启动器尝试提高继承硬上限。共享启动器改为
+  只取更严格上限，resource policy v8；854 项本地通过（4 live skip），Ruff/mypy 等通过。
+  新源码远端待验收；Docker 曾失败的创建/身份/清理根因、R02 其余验收及 R06 下一层未关闭。
 - PR #8：`https://github.com/Zer0Gate/vulngate/pull/8`，草稿，尚未合并/发布。
 - `1d5f4fa` 的 CI run `36484103241`：Linux 3.10/3.13、macOS 3.13 和
   security job 通过；macOS 3.10 因 POSIX address-space preflight 被系统拒绝失败，
