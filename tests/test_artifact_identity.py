@@ -4,6 +4,7 @@ import os
 import tempfile
 import unittest
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import ExitStack
 from contextvars import copy_context
 from pathlib import Path
 from unittest.mock import patch
@@ -18,10 +19,12 @@ from agent.tools.build import converge_s4_cells, JavaMatrixRunner
 
 class ArtifactIdentityTests(unittest.TestCase):
     def setUp(self):
-        self.temp = self.enterContext(tempfile.TemporaryDirectory())
+        self.contexts = ExitStack()
+        self.addCleanup(self.contexts.close)
+        self.temp = self.contexts.enter_context(tempfile.TemporaryDirectory())
         self.root = Path(self.temp)
         self.identity = ArtifactIdentity(self.root, "fixture", 1, "a" * 64)
-        self.enterContext(identity_scope())
+        self.contexts.enter_context(identity_scope())
         activate(self.identity)
         self.store = CheckpointStore(self.root, "fixture", 1)
 

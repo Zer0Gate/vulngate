@@ -1,6 +1,18 @@
 # VulnGate 整改续接记录（2026-09-29）
 
-## 2026-10-01 增量：R06 当前父身份与精确产物字节（提交前候选）
+## 2026-10-01 增量：R06 当前父身份与精确产物字节（远端验收中）
+
+源码已推送 `033351af190afe45047a9fcb0f32452a0877c278`。run `36791689233` 的
+Ubuntu 3.10 `110145804516` 与 macOS 3.10 `110145804558` 失败：新增测试
+setUp 使用 3.11 才有的 TestCase.enterContext，14 项均在 setup 报 AttributeError；
+不是运行时代码或隔离健康失败。改为 ExitStack + addCleanup，保留所有断言和
+清理顺序，不删测试/降 Python 支持。修正后 85 项（6.424s）聚焦 OK、Ruff/diff-check OK。
+本机无 Python 3.10，最终该版本以修正提交的新 CI 为准，不能复用 3.13 成功。
+该旧 run 的真实隔离 `110145804293` 4 项（6.180s）OK/no skip，Ubuntu 3.13
+`110145804523`、security `110145804535` 成功；另一路 macOS 3.13 与 test 聚合
+终态按 run 查询。修正仍待精确新 HEAD CI，PR 不可合并。
+
+下方提交前候选记录保留为历史。
 
 基线 fe432743d5dfbee3bb66665eb87b0d9e09d98102 的 run 36788297413 已终态 SUCCESS，
 不重做 fc429d5 checkpoint 或 aa235d7 单调资源限制。本批源码 SHA 以
