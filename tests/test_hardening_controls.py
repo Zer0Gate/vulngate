@@ -57,8 +57,13 @@ class HardeningControlTests(unittest.TestCase):
     def test_branch_governance_apply_payload_is_explicit_and_bounded(self):
         policy = apply_branch_governance.load_policy(ROOT)
         payload = apply_branch_governance.build_payload(policy)
-        self.assertEqual(["test", "security"],
+        self.assertEqual(["test", "security", "CodeQL"],
                          payload["required_status_checks"]["contexts"])
+        self.assertEqual(0,
+                         payload["required_pull_request_reviews"][
+                             "required_approving_review_count"])
+        self.assertFalse(payload["required_pull_request_reviews"][
+            "require_code_owner_reviews"])
         self.assertTrue(payload["enforce_admins"])
         self.assertFalse(payload["allow_force_pushes"])
         self.assertFalse(payload["allow_deletions"])
@@ -66,7 +71,8 @@ class HardeningControlTests(unittest.TestCase):
     def test_branch_governance_policy_matches_ci_contract(self):
         result = validate_branch_governance.validate(ROOT)
         self.assertTrue(result["local_policy_valid"])
-        self.assertEqual(["test", "security"], result["required_checks"])
+        self.assertEqual(["test", "security", "CodeQL"],
+                         result["required_checks"])
         self.assertEqual("requires-github-admin-readback",
                          result["remote_enforcement"])
 

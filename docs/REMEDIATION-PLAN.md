@@ -9,7 +9,7 @@
 
 | ID | 工作包与验收要求 | 状态 / 证据 |
 | --- | --- | --- |
-| R01 | 新 PR；稳定 test/security 门禁；矩阵失败/取消/跳过阻断；审核合并 | partial：PR #8；1270221 的四组回归、test/security 及独立 CodeQL 均通过，open 告警为空；PR 仍为草稿、review required，合并/发布未完成 |
+| R01 | 新 PR；稳定 test/security/CodeQL 门禁；矩阵失败/取消/跳过阻断；实质审核后合并 | partial：PR #8；1270221 的四组回归、test/security 及独立 CodeQL 均通过，open 告警为空；单人维护仓库不强制批准票，远端必需检查为 test/security/CodeQL，PR 仍为草稿，合并/发布未完成 |
 | R02 | 服务与 PoC 统一隔离生命周期；启动前限制；容器/cgroup 清理；真实环境压力与失败测试 | partial：源码 `f9836f0` 已推送，817 项本地通过（4 live skip）；run `36752932751` 四组矩阵/security/test 及独立 CodeQL 全绿，real-isolation job 真跑 4 项无 skip，验证健康隔离/限额/capabilities 与超时/清理失败重试。前两轮真实失败已修补并复验。PoC/服务统一 backend、observer 对接、非 root 变体、完整压力/断连/迟到创建和崩溃恢复未完成，不能关闭整个 R02 |
 | R03 | 每次请求预留调用/token；网络与空响应 retry；并发；未知计费；deadline；成本 unknown | validated-source-tests：12 项专项、731 项当时全量通过；源码已包含在 f0b3819 的四组远端回归成功结果中。此证据是逻辑/回归测试，不虚构真实 provider 的计费测量或发布状态 |
 | R04 | 安装事务、故障恢复、并发；不可变工具快照；旧线程不静默混版 | validated-source-tests：内容摘要版本目录、并发锁、持久化事务/恢复、启用后树校验；18 项专项和 748 项当时全量通过，源码已包含在 f0b3819 的四组远端回归成功结果中。正式包实际激活及旧线程行为仍待验收；见 INSTALLATION.md |

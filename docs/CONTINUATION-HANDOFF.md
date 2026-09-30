@@ -1,5 +1,13 @@
 # VulnGate 整改续接记录（2026-09-29）
 
+## 2026-10-01 增量：单人维护的 main 门禁策略
+
+main 继续要求 PR、管理员强制执行、严格必需检查且禁止强推/删除；不再要求
+另一位维护者批准或 CODEOWNERS 批准。稳定必需检查为 `test`、`security`、`CodeQL`，
+其中 `test` 聚合 job 同时要求四组回归矩阵和真实隔离 job 成功。仓库策略文件已调整，
+GitHub 远端已按该策略应用并由仓库脚本读回确认。
+PR #8 当前评审未完成，不据此条规则把 PR 视为已审或可合并。
+
 ## 2026-10-01 增量：R06 当前父身份与精确产物字节（源码远端已验收）
 
 ### 最新验收状态（优先于下方历史记录）
@@ -29,8 +37,8 @@ execution_state=executed-with-effect；没有执行目标或改文件，尚未�
 S8 false-confirmation 路径，也尚未修补这一独立边界。见 build.py 的
 _trusted_observed_effects 与 Java/Shell cell_id 构造、autonomous/execution.py
 修复后 converge 调用。该问题是下一层 R06/R07，不把本批字节门禁重复做一遍。
-PR #8 OPEN/DRAFT/REVIEW_REQUIRED；main 保护 test/security required、
-1 approval、enforce_admins=true，未合并、发布、重装。完整 R01–R12 仍未完成。
+PR #8 OPEN/DRAFT，实质安全审阅未完成；main 保护 test/security/CodeQL required、
+approval count=0、enforce_admins=true，未合并、发布、重装。完整 R01–R12 仍未完成。
 
 ### Python 3.10 失败及修正（历史）
 
