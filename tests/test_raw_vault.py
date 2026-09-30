@@ -1,5 +1,6 @@
 """Operator opt-in raw S4 vault, expiry, permissions and encryption gates."""
 import importlib.util
+import base64
 import io
 import json
 import os
@@ -140,7 +141,12 @@ class RawVaultTests(unittest.TestCase):
         raw = (vault.store.root / vault.directory / name).read_text()
         self.assertNotIn(SECRET, raw)
         self.assertEqual(SECRET, vault.read(name)["cells"][0]["stdout"])
-        (vault.store.root / vault.directory / name).write_text(raw[:-1] + "x")
+        # Changing unused base64 padding bits can decode to identical bytes.
+        # Corrupt an authenticated ciphertext byte, not its textual spelling.
+        corrupted = bytearray(base64.urlsafe_b64decode(raw))
+        corrupted[25] ^= 1
+        (vault.store.root / vault.directory / name).write_text(
+            base64.urlsafe_b64encode(corrupted).decode("ascii"))
         with self.assertRaisesRegex(ValueError, "authentication failed"):
             vault.read(name)
         key_path.chmod(0o644)

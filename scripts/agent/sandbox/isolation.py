@@ -65,7 +65,8 @@ def _sandbox_path(value: str, workspace: Path) -> str:
     """Translate a whole workspace path, never substrings in payload data."""
     path = Path(value)
     if path.is_absolute() and _contained(path, workspace):
-        return "/workspace/" + str(path.resolve().relative_to(workspace.resolve()))
+        relative = path.resolve().relative_to(workspace.resolve())
+        return "/workspace" if relative == Path(".") else "/workspace/" + str(relative)
     return value
 
 
@@ -84,6 +85,9 @@ class IsolationBackend:
 
     def launcher_env(self) -> Dict[str, str]:
         return {"PATH": os.defpath, "LC_ALL": "C"}
+
+    def approval_identity(self) -> Dict[str, str]:
+        return {}
 
     def start_fds(self) -> Tuple[int, ...]:
         return ()
@@ -223,6 +227,7 @@ class LinuxBubblewrapBackend(IsolationBackend):
             self.executable, "--die-with-parent", "--new-session",
             "--unshare-user", "--unshare-pid", "--unshare-ipc",
             "--unshare-uts", "--unshare-net", "--proc", "/proc",
+            "--cap-drop", "ALL",
             "--dev", "/dev", "--tmpfs", "/tmp", "--dir", "/workspace",
             "--bind", str(workspace), "/workspace",
             "--info-fd", str(self._info_writer), "--clearenv",
@@ -232,7 +237,7 @@ class LinuxBubblewrapBackend(IsolationBackend):
                 args.extend(["--ro-bind", path, path])
         relative = "."
         if _contained(working_dir, workspace):
-            relative = "/workspace/" + str(working_dir.relative_to(workspace))
+            relative = _sandbox_path(str(working_dir), workspace)
         args.extend(["--chdir", relative])
         for key, value in sorted(env.items()):
             # Environment keys/values have already passed the lifecycle
@@ -324,7 +329,9 @@ class LinuxBubblewrapBackend(IsolationBackend):
         args = [nsenter, "--preserve-credentials"]
         args.extend("--%s=/proc/self/fd/%d" % (options[name], fd)
                     for name, fd in self._context_fds.items())
-        args.extend(["--", "/usr/bin/env", "-i"])
+        args.extend(["--", "/usr/bin/setpriv", "--bounding-set=-all",
+                     "--inh-caps=-all", "--ambient-caps=-all", "--no-new-privs",
+                     "--", "/usr/bin/env", "-i"])
         args.extend("%s=%s" % (key, _sandbox_path(value, self.workspace))
                     for key, value in sorted(env.items()))
         return args + _sandbox_command(command, self.workspace)
@@ -351,6 +358,7 @@ class ContainerBackend(IsolationBackend):
         self.working_dir: Optional[Path] = None
         self._run_token: Optional[str] = None
         self._container_id: Optional[str] = None
+        self._launch_pending = False
         self.descriptor = IsolationDescriptor(
             backend="%s-runtime-container" % Path(executable).name,
             version=_version(executable),
@@ -370,7 +378,7 @@ class ContainerBackend(IsolationBackend):
         self._run_token = uuid.uuid4().hex
         relative = "."
         if _contained(working_dir, workspace):
-            relative = "/workspace/" + str(working_dir.relative_to(workspace))
+            relative = _sandbox_path(str(working_dir), workspace)
         args = [
             self.executable, "run", "--rm", "--init", "--network", "none",
             "--name", "vulngate-" + self._run_token,
@@ -379,6 +387,8 @@ class ContainerBackend(IsolationBackend):
             "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
             "--pids-limit", "128", "--tmpfs", "/tmp:rw,noexec,nosuid,nodev", "-v",
             "%s:/workspace:rw" % workspace, "-w", relative,
+            "--ulimit", "core=0:0", "--ulimit", "fsize=67108864:67108864",
+            "--ulimit", "nofile=512:512",
         ]
         for key, value in sorted(env.items()):
             args.extend(["-e", "%s=%s" % (key, _sandbox_path(value, workspace))])
@@ -392,6 +402,9 @@ class ContainerBackend(IsolationBackend):
             if os.environ.get(key):
                 env[key] = os.environ[key]
         return env
+
+    def approval_identity(self) -> Dict[str, str]:
+        return {"image_reference": self.image}
 
     def _owned_containers(self) -> List[str]:
         if self._run_token is None:
@@ -407,6 +420,7 @@ class ContainerBackend(IsolationBackend):
         return ids
 
     def after_start(self, pid: int) -> Optional[int]:
+        self._launch_pending = True
         deadline = time.monotonic() + 5
         while time.monotonic() < deadline:
             ids = self._owned_containers()
@@ -434,6 +448,10 @@ class ContainerBackend(IsolationBackend):
         # Use engine-owned labels and immutable IDs, never a target-writable
         # cidfile or the PID of the disposable Docker/Podman client.
         ids = self._owned_containers()
+        if not ids and self._container_id is None and self._launch_pending:
+            raise OSError("container creation has unresolved identity; cleanup is unverified")
+        if ids and self._container_id is None:
+            self._container_id = ids[0]
         for container_id in ids:
             subprocess.run([self.executable, "rm", "--force", container_id],
                            env=self.launcher_env(), stdout=subprocess.DEVNULL,
@@ -441,6 +459,7 @@ class ContainerBackend(IsolationBackend):
         if self._owned_containers():
             raise OSError("owned container survived teardown")
         self._container_id = self._run_token = None
+        self._launch_pending = False
 
 
 def detect_isolation_backend(workspace: Path, raw: Any) -> Tuple[Optional[IsolationBackend], IsolationDescriptor]:

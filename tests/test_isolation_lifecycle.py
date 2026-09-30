@@ -12,9 +12,45 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from agent.sandbox.isolation import ContainerBackend, LinuxBubblewrapBackend  # noqa: E402
+from agent.orchestrator.config import TargetConfig  # noqa: E402
+from agent.tools.service_lifecycle import ServiceLifecycle  # noqa: E402
 
 
 class IsolationLifecycleTests(unittest.TestCase):
+    def test_container_image_reference_is_bound_to_approval(self):
+        with tempfile.TemporaryDirectory() as td, patch(
+                "agent.sandbox.isolation._version", return_value="test"):
+            root = Path(td)
+            cfg = TargetConfig(name="image-bound", discovery_date="2026-10-01",
+                               runtime_lab={"service": {"start_command": ["sh", "service.sh"]}})
+            digests = []
+            for image in ("image-a", "image-b"):
+                backend = ContainerBackend("/usr/bin/docker", image)
+                with patch("agent.tools.service_lifecycle.detect_isolation_backend",
+                           return_value=(backend, backend.descriptor)):
+                    digests.append(ServiceLifecycle(root, "image-bound", 1, cfg)
+                                   .snapshot()["config_digest"])
+            self.assertNotEqual(*digests)
+
+    def test_unresolved_container_create_is_not_empty_cleanup(self):
+        with tempfile.TemporaryDirectory() as td, patch(
+                "agent.sandbox.isolation._version", return_value="test"):
+            backend = ContainerBackend("/usr/bin/docker", "fixture-image")
+            backend.wrap_command(["sh", "service.sh"], Path(td), Path(td), {})
+            with patch.object(backend, "_owned_containers", side_effect=OSError("engine unavailable")):
+                with self.assertRaises(OSError):
+                    backend.after_start(123)
+            with patch.object(backend, "_owned_containers", return_value=[]):
+                with self.assertRaisesRegex(OSError, "unresolved identity"):
+                    backend.close()
+            self.assertIsNotNone(backend._run_token)
+            identity = "d" * 64
+            with patch.object(backend, "_owned_containers", side_effect=[[identity], []]), patch(
+                    "agent.sandbox.isolation.subprocess.run") as run:
+                backend.close()
+            self.assertEqual(identity, run.call_args.args[0][-1])
+            self.assertIsNone(backend._run_token)
+
     def test_container_health_requires_owned_identity_and_maps_workspace(self):
         with tempfile.TemporaryDirectory() as td, patch(
                 "agent.sandbox.isolation._version", return_value="test"):
@@ -24,6 +60,7 @@ class IsolationLifecycleTests(unittest.TestCase):
                 backend.health_command(["sh", str(root / "health.sh")], 123, {})
             start = backend.wrap_command(["sh", str(root / "service.sh")], root, root, {})
             self.assertIn("/workspace/service.sh", start)
+            self.assertEqual("/workspace", start[start.index("-w") + 1])
             identity = "a" * 64
             with patch("agent.sandbox.isolation.subprocess.run", return_value=
                        subprocess.CompletedProcess([], 0, identity + "\n")):

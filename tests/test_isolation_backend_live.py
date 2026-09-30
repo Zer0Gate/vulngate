@@ -7,6 +7,7 @@ jobs skip this suite; the stable required test check also requires its CI job.
 import os
 import platform
 import shutil
+import sys
 import subprocess
 import tempfile
 import time
@@ -24,6 +25,26 @@ from agent.tools.service_lifecycle import ServiceLifecycle
 @unittest.skipUnless(os.environ.get("VULNGATE_LIVE_ISOLATION") == "1",
                      "real isolation runs in the dedicated Linux CI job")
 class LiveIsolationBackendTests(unittest.TestCase):
+    def setUp(self):
+        # Only synthetic fixture stderr, bounded and printed for this live CI
+        # job. Production lifecycle output remains suppressed.
+        self.diagnostics = self.enterContext(tempfile.TemporaryFile())
+        original_popen = subprocess.Popen
+
+        def fixture_popen(*args, **kwargs):
+            if kwargs.get("stderr") == subprocess.DEVNULL:
+                kwargs["stderr"] = self.diagnostics
+            return original_popen(*args, **kwargs)
+
+        self.enterContext(patch("subprocess.Popen", side_effect=fixture_popen))
+
+    def tearDown(self):
+        self.diagnostics.seek(0, os.SEEK_END)
+        self.diagnostics.seek(max(0, self.diagnostics.tell() - 8192))
+        output = self.diagnostics.read().decode("utf-8", "replace")
+        if output:
+            print("Synthetic live fixture diagnostics:\n" + output, file=sys.stderr)
+
     @classmethod
     def setUpClass(cls):
         if (platform.system() != "Linux" or os.geteuid() != 0
@@ -57,6 +78,8 @@ class LiveIsolationBackendTests(unittest.TestCase):
         (workspace / "service.sh").write_text(
             "#!/bin/sh\nset -eu\n"
             "test \"$PWD\" = /workspace\n"
+            "cat /proc/self/status > /workspace/service-status\n"
+            "cat /proc/self/limits > /workspace/service-limits\n"
             "printf started > /workspace/started\n"
             "setsid sh -c 'sleep 60' &\n"
             "while :; do sleep 1; done\n", encoding="utf-8")
@@ -68,6 +91,8 @@ class LiveIsolationBackendTests(unittest.TestCase):
             "test ! -e '" + str(host_only) + "'\n"
             "test -f /workspace/started\n"
             "cat /proc/self/cgroup > /workspace/health-cgroup\n"
+            "cat /proc/self/status > /workspace/health-status\n"
+            "cat /proc/self/limits > /workspace/health-limits\n"
             "printf isolated > /workspace/healthy\n"
             + ("setsid sh -c 'sleep 60' &\nsleep 60\n" if timeout_health else ""),
             encoding="utf-8")
@@ -101,6 +126,15 @@ class LiveIsolationBackendTests(unittest.TestCase):
         self.assertTrue(ready["ready"], ready)
         self.assertEqual("isolated", (workspace / "healthy").read_text())
         self.assertEqual("managed-service-backend", ready["health"]["execution_context"])
+        for phase in ("service", "health"):
+            status = dict(line.split(":", 1) for line in (workspace / (phase + "-status"))
+                          .read_text().splitlines() if ":" in line)
+            for name in ("CapEff", "CapBnd", "CapAmb", "CapInh"):
+                self.assertEqual(0, int(status[name].strip(), 16), (phase, status))
+            self.assertEqual("1", status["NoNewPrivs"].strip())
+            limits = (workspace / (phase + "-limits")).read_text()
+            file_limit = next(line for line in limits.splitlines() if line.startswith("Max file size"))
+            self.assertEqual(["67108864", "67108864", "bytes"], file_limit.split()[-3:])
         controller = lifecycle.cgroup_controller
         if controller is not None:
             self.assertIn(controller.path.name, (workspace / "health-cgroup").read_text())

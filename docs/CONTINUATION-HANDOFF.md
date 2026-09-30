@@ -2,6 +2,30 @@
 
 ## 2026-10-01 增量：R02 健康检查与 backend 清理候选（最新断点）
 
+独立审查已完成（同一轮，未再次派审）：确认 12 KB digest 截断、镜像引用
+未纳入授权摘要、root capability/健康进程限制缺口、迟到容器创建清理不确定。
+当前后续增量：digest 哈希完整序列化内容、授权绑定 backend 的镜像引用；
+Linux 服务 drop ALL，健康进程经 setpriv 清除 bounding/inheritable/ambient
+能力并设置 no_new_privs；健康命令在容器内部也套资源限额；容器 spec 额外
+设置 core/fsize/nofile 上限。已启动但 ID 始终未知时，空列表不再当作清理成功，
+保留 token/锁供后续重试；若迟到 ID 可见，再删除并确认消失。此保守状态可能
+需要人工/后续恢复流程，不虚构“创建已经结束”。policy 升 service v5/S4 v17。
+51 项聚焦测试、Ruff/mypy 通过，新增真实测试核验 CapEff/CapBnd/CapAmb/CapInh、
+NoNewPrivs 及服务/健康进程 64 MiB file-size limit；真实结果仍待 CI。
+镜像标签漂移/实际 resolved ID 固定和 crash 后恢复仍属 R06/R02 剩余工作。
+本地新增反例后的 817 项全量（69.6s）通过，4 项 live skip；随后把 workspace
+根路径统一映射成 `/workspace`（而非 `/workspace/.`），最后 51 项聚焦、
+Ruff/mypy 通过。上游会把 chdir 参数原样设置为 PWD，因此前者是 Linux
+fixture 的确定字符串不一致来源；仍须新 CI 实测，不能断言所有失败已解决。
+
+`d87ee1f` 的 run `36751174798` 仍失败：Linux identity handshake 已通过，但
+service exited=1，另一次容器就绪也失败；job `110009879180`。现增加仅 live
+synthetic fixture 的有界 stderr 诊断以获取实际失败点；生产输出仍抑制。
+Ubuntu 3.10 job `110009879100` 的 vault 篡改测试失败，是改 token 最后 base64
+字符可能只改变未使用 padding bits，解码内容不变；反例改为真实翻转已认证
+密文字节后重新编码，不更改/弱化 vault 认证。其余矩阵与 security 通过，
+test 按门禁失败。不能以失败重跑或模拟通过宣布完整验收。
+
 后续真实 CI `36750396860`：四组回归及 security 成功，但 real-isolation job
 `110007230705` 的 bubblewrap 三个场景失败；真实容器就绪/健康超时/清理失败
 重试场景通过。固定 test 按预期失败，未跳过失败用例。

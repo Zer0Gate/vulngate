@@ -46,7 +46,7 @@ from .redaction import redact_text
 
 SERVICE_SCHEMA_VERSION = "service-lifecycle-v8-isolated-healthcheck"
 PROCESS_SCHEMA_VERSION = "service-processes-v6-backend-cleanup"
-SERVICE_ISOLATION_POLICY_VERSION = "managed-service-isolation-backend-v4-ready-handshake"
+SERVICE_ISOLATION_POLICY_VERSION = "managed-service-isolation-backend-v5-caps-health-limits"
 CLAIM_STATUS = "not-a-finding"
 MAX_COMMAND_TOKENS = 32
 MAX_ENV_KEYS = 32
@@ -66,7 +66,7 @@ def _text(value: Any, limit: int = 180) -> str:
 def _digest(value: Any) -> str:
     payload = json.dumps(value, ensure_ascii=False, sort_keys=True,
                          separators=(",", ":"), default=str)
-    return hashlib.sha256(payload.encode("utf-8")[:12000]).hexdigest()
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def _loopback(host: str) -> bool:
@@ -329,6 +329,8 @@ class ServiceLifecycle:
             **self._isolation_contract("pending"),
             "env_keys": sorted(self.env),
             "env_digest": _digest(self.env)[:24],
+            "backend_config_digest": _digest(self.isolation_backend.approval_identity())[:24]
+            if self.isolation_backend is not None else "",
             "healthcheck": self._health_url_info() if self.health_url
             else {"configured": bool(self.health_command), "kind": "command" if self.health_command else "none"},
             "expected_status": list(self.expected_status),
@@ -344,6 +346,8 @@ class ServiceLifecycle:
                 "stop_external": self.stop_external,
                 "isolation_policy": SERVICE_ISOLATION_POLICY_VERSION,
                 "isolation_backend": self.isolation_descriptor.as_dict(),
+                "backend_config_digest": _digest(self.isolation_backend.approval_identity())[:24]
+                if self.isolation_backend is not None else "",
                 "run_id": self.run_id,
             })[:24],
             "claim_status": CLAIM_STATUS,
@@ -585,6 +589,9 @@ class ServiceLifecycle:
             raise PermissionError("managed healthcheck has no service identity")
         self.approval.assert_allowed("service_lifecycle", "isolated service healthcheck")
         env = minimal_poc_env({**self.env, "VULNGATE_SERVICE_HEALTHCHECK": "true"})
+        command, _target_limits = prepare_posix_resource_limited_command(
+            command, env, cpu_seconds_per_process=self.health_timeout + 1,
+            preflight_timeout=min(5, self.health_timeout))
         invocation = backend.health_command(command, int(self.process.pid), env)
         # The trusted host wrapper receives no target hooks. Its hard limits
         # are applied before nsenter/container-client and target execution.

@@ -272,6 +272,19 @@ class ServiceLifecycleTests(unittest.TestCase):
             self.assertIsNone(lifecycle.process)
             self.assertEqual([], cgroup.attached_pids)
 
+    def test_large_early_env_value_cannot_hide_later_approval_change(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            cgroup = _GateTestCgroup(root / "target-started")
+            lifecycle = self._gated_fixture(root, cgroup, {
+                "A_PADDING": "x" * 12000, "Z_VALUE": "approved"})
+            before = lifecycle.snapshot()["config_digest"]
+            lifecycle.env["Z_VALUE"] = "not-approved"
+            self.assertNotEqual(before, lifecycle.snapshot()["config_digest"])
+            with patch("agent.tools.service_lifecycle.subprocess.Popen") as popen:
+                self.assertEqual("policy-denied", lifecycle.ensure_ready()["status"])
+            popen.assert_not_called()
+
     def test_preflight_and_gate_do_not_execute_target_env_before_attach(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)

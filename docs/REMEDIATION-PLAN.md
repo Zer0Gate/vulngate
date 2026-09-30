@@ -10,7 +10,7 @@
 | ID | 工作包与验收要求 | 状态 / 证据 |
 | --- | --- | --- |
 | R01 | 新 PR；稳定 test/security 门禁；矩阵失败/取消/跳过阻断；审核合并 | partial：PR #8；1270221 的四组回归、test/security 及独立 CodeQL 均通过，open 告警为空；PR 仍为草稿、review required，合并/发布未完成 |
-| R02 | 服务与 PoC 统一隔离生命周期；启动前限制；容器/cgroup 清理；真实环境压力与失败测试 | partial：`5045c8c` 启动门控已推送，`15723b9` 的 run `36658221586` 全绿。当前增量封闭托管命令健康检查的宿主 runner 路径，固定 Linux namespace/root/cwd 与本轮容器 ID、核验容器清理，授权绑定环境值；813 项本地测试通过但真实后端 4 项跳过。新增 required real-isolation CI；独立审查及远端真实验收待完成，PoC/服务统一 backend 与完整压力/断连测试未完成 |
+| R02 | 服务与 PoC 统一隔离生命周期；启动前限制；容器/cgroup 清理；真实环境压力与失败测试 | partial：`5045c8c` 启动门控、`c638997` 健康 backend/清理及 `d87ee1f` ready 握手已推送。两轮 real-isolation/test 均失败，不能 validated；第一轮容器场景通过，第二轮 Linux 已完成身份校验但 service exited=1。审查后增量补完整授权 digest/镜像引用、root capability 清除、容器健康限额、未决创建保守清理，817 项本地通过但 4 项 live skip，最终 51 项聚焦通过；真实验收、PoC/服务统一 backend、完整压力/断连与恢复未完成 |
 | R03 | 每次请求预留调用/token；网络与空响应 retry；并发；未知计费；deadline；成本 unknown | validated-local：12 项专项、731 项全量（Python 3.13）；Ruff/mypy/compileall 通过；远端矩阵待通过 |
 | R04 | 安装事务、故障恢复、并发；不可变工具快照；旧线程不静默混版 | validated-local：内容摘要版本目录、并发锁、持久化事务/恢复、启用后树校验；18 项专项和 748 项全量（Python 3.13）通过。远端矩阵、正式包实际激活及旧线程行为仍待验收；见 INSTALLATION.md |
 | R05 | 普通证据安全序列化；raw vault 默认关、权限与期限；错误路径敏感信息测试 | partial：普通 JSON/矩阵/CLI/账本共用投影与私有原子写入已推送，S4 policy v13；raw vault 默认关、1–30 天独立期限、0700/0600、可选 Fernet、显式清理及 CLI 固定状态回执均已推送；1270221 的远端矩阵、CodeQL 通过。旧产物、剩余自由文本及真包验收未完成，见 EVIDENCE-STORAGE.md |
