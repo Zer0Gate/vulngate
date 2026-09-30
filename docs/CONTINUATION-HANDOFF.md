@@ -1,5 +1,30 @@
 # VulnGate 整改续接记录（2026-09-29）
 
+## 2026-09-30 增量：R02 cgroup 启动/清理止损（最新断点）
+
+`5045c8c97ac335f13650b5ba6c9dc868cf1333ea` 已提交推送至 PR #8 的
+`Zer0Gate/vulngate-release-1.3.0`。该提交是 R02 的**部分整改**，不是完整隔离验收：
+Linux 服务先启动仅能等待管道消息的受信门控进程，核验其 cgroup 成员身份后才
+发送目标命令；预检与宿主侧 bubblewrap/container 客户端不再继承目标控制的
+`BASH_ENV`/动态加载等环境。cgroup 使用每次启动独立目录、限额读回、
+`cgroup.kill`、`cgroup.events` 清空确认及删除失败显式上报；S4 保留清理失败状态。
+S4 证据策略升 v14，使旧 checkpoint 不按新隔离契约静默复用。
+
+本地 800 项全量及最后 15 项聚焦测试通过，Ruff、mypy、compileall、
+`git diff --check` 通过。测试覆盖 BASH_ENV 启动前触发、目标环境在附着后生效、
+附着失败不执行目标、cgroup 清理失败与 PID 采样不确定、S4 清理失败回执。
+这只是模拟 cgroup 验证：当前宿主为 macOS，Docker daemon socket 不存在，
+尚无真实 Linux cgroup/container 压力和失败注入结果。PR 仍是草稿、需要审核；
+本提交的 CI run `36658131331`（Linux/macOS 3.10/3.13、security、test）
+已启动，记录时 Ubuntu 两组及 security 正在运行、macOS 两组排队；独立
+CodeQL 仍须按新 HEAD 核验，不能沿用 `701189e` 的全绿结果。
+
+**R02 下一步**：命令式健康检查在服务启动后仍可经宿主 runner 执行，未与服务
+共用隔离边界；容器客户端/容器本体的停止与残留清理也需逐项证明。先封闭
+健康检查的 backend 路径与目标环境注入，再做 Linux 真 cgroup、容器断连/派生
+后代、清理失败压力测试；随后才可考虑 R02 validated。PoC 与服务统一 backend
+仍未完成。不要把本部分提交、模拟测试或绿色 CI 误判为 R02 完成。
+
 ## 2026-09-30 增量：R05 raw vault（优先于以下历史断点）
 
 普通证据补丁已提交推送为 `ed84fb2e74c4a77e1b26206e0e8118e1bb4df5dc`。
