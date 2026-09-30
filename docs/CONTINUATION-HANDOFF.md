@@ -2,6 +2,27 @@
 
 ## 2026-10-01 增量：R06 Run Manifest/checkpoint 身份门禁
 
+### 最新验收状态（优先于下方提交前候选记录）
+
+源码 `fc429d5f9663ab2837b68b848a38e66f12520898` 已提交推送。
+CI run `36760403261` 已完成 SUCCESS：四组 Linux/macOS Python 3.10/3.13、
+security job `110041202971`、test 聚合 `110042461366` 全部成功；独立
+CodeQL SUCCESS，PR merge ref open alerts=0。真实隔离 job `110041203169`
+运行 4 项（6.4s）、OK、无 skip，确认共用引擎选择器未破坏现有真实 backend。
+全部 jobs 均已终态，没有仍运行的源码验收 job 或审阅 agent。
+
+本次随后只提交本交接和计划文档；文档 HEAD 的 CI 需另外查询，不能把源码
+HEAD 的成功写成文档 HEAD 的已验证结果。源码/本地与远端 branch 保持一致；
+PR 仍草稿/review required，没有合并、发布或插件刷新。
+R06 整包仍 partial，以下列出的 cells/receipts/冻结边界是下一批真实工作，
+不得把这个绿色候选扩大为完整整改目标完成。
+
+CI 还报告固定 action 的 Node 20 被平台强制转 Node 24，以及 ubuntu-latest
+将迁移的维护提示；纳入 R08 依赖/runner 兼容性后续验收，不抑制通知或改 tag
+来冒充 SHA pin 更新。此次并无因此失败的 job。
+
+### 提交前候选记录（历史）
+
 延续已验证源码，不重做 R02。已确认上一文档 HEAD `f0b3819` 的 CI
 `36753671936` 全部完成 SUCCESS；本批实现基线就是该提交。
 本节与源码候选一同提交；精确候选 SHA 请以
