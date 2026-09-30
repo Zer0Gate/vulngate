@@ -318,4 +318,70 @@ def bind_round(store: Any, manifest: RunManifest) -> str:
     for stage in store.completed_stages():
         if stage in {"S1", "S2", "S3", "S4", "S5", "S6", "S7", "S8"}:
             store.load_stage(stage)
+    from ..memory.artifact_identity import activate
+    activate(store._store.binding)
     return manifest.sha256
+
+
+def bind_cli_round(args: Any) -> Any:
+    """Recompute full inputs, never accept a persisted/caller-supplied SHA."""
+    from ..analysis.audit_budget import start_round_budget, round_budget_snapshot, DEFAULT_BUDGET_SECONDS
+    from ..memory.state import CheckpointStore
+    from .work_budget import WorkBudgetExceeded
+    if not getattr(args, "config", None):
+        raise RunIdentityError("execution requires --config; legacy artifacts are inspect-only")
+    try:
+        config = TargetConfig.load(Path(args.config))
+        options = json.loads(args.identity_options) if getattr(args, "identity_options", None) else {"driver": "matrix"}
+    except (OSError, TypeError, ValueError) as exc:
+        raise RunIdentityError("CLI identity configuration/options could not be validated") from exc
+    if config.name != args.target:
+        raise RunIdentityError("config target differs from requested execution target")
+    if not isinstance(options, dict):
+        raise RunIdentityError("--identity-options must be a JSON object matching the parent controller")
+    if getattr(args, "authorized_staging", False):
+        options = {**options, "authorized_staging": True,
+                   "staging_hosts": sorted(getattr(args, "staging_host", []) or [])}
+    try:
+        workspace = Path(args.workspace).resolve(strict=True)
+        # An explicitly supplied external manifest is operator input, not a
+        # persisted S4 result. Bind the exact bytes consumed, even outside the
+        # configured source inventory; receipts must supply this same input.
+        matrix_input = None
+        matrix_path = None
+        if getattr(args, "manifest", None):
+            path = Path(args.manifest).absolute()
+            try:
+                relative = path.relative_to(Path(args.workspace).absolute())
+            except ValueError:
+                relative = path.relative_to(workspace)
+            matrix_path = relative
+            from ..memory.artifact_identity import ArtifactIdentity
+            if not ArtifactIdentity(workspace, args.target, args.round, "0" * 64).covers(relative):
+                matrix_input = EvidenceStore(workspace).read_bytes(relative)
+                options = {**options, "matrix_manifest_sha256": hashlib.sha256(matrix_input).hexdigest()}
+        record = start_round_budget(workspace, args.target, args.round,
+                                config.audit_round_timeout_seconds if config.audit_round_timeout_seconds is not None
+                                else DEFAULT_BUDGET_SECONDS)
+    except (OSError, TypeError, ValueError) as exc:
+        raise RunIdentityError("CLI workspace/deadline/input could not be verified") from exc
+    snapshot = round_budget_snapshot(record)
+    if snapshot["expired"]:
+        raise RunIdentityError("execution identity deadline expired")
+    budget = WorkBudget(name="cli-identity", wall_seconds=max(0.001, snapshot["remaining_seconds"]),
+                        scan_files=500_000, scan_bytes=4 * 1024 * 1024 * 1024)
+    try:
+        manifest = RunManifest.collect(workspace, config, args.round, budget=budget,
+            source_root=Path(args.source_root) if getattr(args, "source_root", None) else workspace,
+            execution_options=options)
+        store = CheckpointStore(workspace, args.target, args.round)
+        bind_round(store, manifest)
+        store.cli_matrix_input = matrix_input
+        store.cli_matrix_path = matrix_path
+    except WorkBudgetExceeded as exc:
+        raise RunIdentityError("execution identity exceeded the existing round budget") from exc
+    except RunIdentityError:
+        raise
+    except (OSError, TypeError, ValueError) as exc:
+        raise RunIdentityError("CLI identity inputs could not be verified") from exc
+    return store

@@ -1,5 +1,44 @@
 # VulnGate 整改续接记录（2026-09-29）
 
+## 2026-10-01 增量：R06 当前父身份与精确产物字节（提交前候选）
+
+基线 fe432743d5dfbee3bb66665eb87b0d9e09d98102 的 run 36788297413 已终态 SUCCESS，
+不重做 fc429d5 checkpoint 或 aa235d7 单调资源限制。本批源码 SHA 以
+`git log -1 --format=%H -- scripts/agent/memory/artifact_identity.py` 查询。
+本节写入时仍未提交，因此没有候选对应的远端 run/job；不得引用旧 HEAD
+全绿作为新增补丁已验收。没有合并、发布或刷新正式插件。
+
+新增 ArtifactIdentity 与 run-artifact-binding-v1 schema；EvidenceStore 发布记录
+父摘要、词法路径、实际序列化字节 SHA256/长度，读同一 fd 校验，保留 dict/list/text。
+两个文件部分发布失败即拒绝，不声称事务或签名。控制器隔离 scope/异常退出，
+自治线程逐任务 copy_context；普通 artifact、cells/fallback、FUZZ、report/ledger
+resume 与本轮 ledger coverage 读取均接入。matrix/receipt 要求完整配置重新比较
+Manifest；显式外部操作员清单也绑定实际消费字节，回执需传同一 --manifest。
+旧产物 inspect 可用，不自动补签。完整行为/CLI 约定见 RUN-IDENTITY.md。
+
+本批一次预调查、一次候选只读审阅均终态并关闭。候选审阅指出裸读 matrix 清单、
+S4 resolve 改变身份范围、候选 ID 非 cell 字典、coverage 裸读本轮 ledger 四条路径；
+主线已确认并修补，加默认清单篡改、真实 S4 symlink、无 S8 checkpoint 的 ledger
+反例及合法读回。空矩阵仍是合法操作完成，不是漏洞确认，保留既有 pending 语义。
+聚焦 85 项（6.492s）OK；最终完整 875 项（89.392s）OK，4 live 在 macOS
+明确 skip。Ruff、mypy 7 模块、compileall、diff-check 通过，全部本地测试已终态。
+新测试同时覆盖未绑定/错误父/路径重放/字节篡改/大文件/部分发布/线程传播及报告账本。
+
+下一步：完整回归、最终 Ruff/diff-check，明确暂存本批源码/schema/tests/docs 后提交推送；
+查询精确新 HEAD 的四矩阵/security/test/真实隔离（无 skip）和 CodeQL，再更新验收记录。
+本轮所有未提交改动为此批候选，没有夹带用户改动；提交前以 git status 核对。
+PR #8 仍 OPEN/DRAFT/REVIEW_REQUIRED；既有 main required checks/approval 不能绕过。
+
+R06 仍 partial：同父不同 PoC/修复/重试/Java-shell lane 的 active attempt/spec、
+effect run/candidate/cell 精确匹配、派生 runtime/JAR 闭包、镜像实际 launch 固定及
+校验到使用冻结未完成；侧车不是 observer 或同 UID 防伪证明。后续不重复本批字节门禁。
+其余 R01–R12 状态沿用 REMEDIATION-PLAN.md：R01 审核/合并未完成；R02 backend
+统一/压力/断连/迟到创建/崩溃恢复及旧 Docker 清理根因；R03 真实计费未宣称；
+R04 正式激活/旧线程验收；R05 剩余写入器/旧产物/真包；R07 observer 归因；
+R08 branch coverage/依赖迁移；R09 可信发布与干净安装；R10 三入口服务拆分；
+R11 enforced 能力矩阵；R12 真实正负未知/恶意 fixture 与性能指标均未整包关闭。
+目标保持 active，不能因单批绿色关闭完整整改。
+
 ## 2026-10-01 增量：嵌套硬资源限制单调收紧修复（源码远端已验收）
 
 ### 最新验收状态（优先于下方提交前候选记录）

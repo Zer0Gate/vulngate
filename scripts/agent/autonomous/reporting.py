@@ -1,6 +1,10 @@
 """Autonomous round orchestration, reporting, and CLI entrypoint."""
 
 from __future__ import annotations
+from contextvars import copy_context
+from ..memory.artifact_identity import isolated_identity
+from ..memory.evidence_store import EvidenceStore
+from ..orchestrator.run_identity import RunIdentityError
 
 # The phase modules share a deliberately centralized policy/context namespace.
 # Keep this import surface stable while the public facade preserves legacy callers.
@@ -26,7 +30,19 @@ from .execution import (
     verify_candidate,
 )
 
+@isolated_identity
 def run_round(ctx: AutoCtx, round_no: int) -> Dict[str, Any]:
+    try:
+        return _run_round(ctx, round_no)
+    except RunIdentityError as exc:
+        error = {"status": "invalid-run-identity", "error": str(exc),
+                 "claim_status": "not-a-finding", "next_candidates": []}
+        ctx.write_artifact(round_no, "S0", "run-identity-status.json", error)
+        print("[round-%02d] refusing artifact identity: %s" % (round_no, exc))
+        return error
+
+
+def _run_round(ctx: AutoCtx, round_no: int) -> Dict[str, Any]:
     """Full S2->S8 round with per-stage checkpoints (baseline fix #10:
     autonomous state semantics aligned with the config pipeline) and the G5
     CVSS-precondition consistency gate (previously missing in this driver)."""
@@ -527,7 +543,7 @@ def run_round(ctx: AutoCtx, round_no: int) -> Dict[str, Any]:
         try:
             with ThreadPoolExecutor(max_workers=max_workers) as pool:
                 futures = {
-                    pool.submit(verify_candidate, ctx, round_no, cand,
+                    pool.submit(copy_context().run, verify_candidate, ctx, round_no, cand,
                                 audits[cand["candidate_id"]]): cand
                     for cand in candidates
                 }
@@ -542,6 +558,8 @@ def run_round(ctx: AutoCtx, round_no: int) -> Dict[str, Any]:
                         stop_requests = getattr(ctx.llm, "set_timeout_provider", None)
                         if callable(stop_requests):
                             stop_requests(lambda: 0.0)
+                        raise
+                    except RunIdentityError:
                         raise
                     except Exception as exc:
                         persisted_cells, convergence = converge_s4_cells(
@@ -780,8 +798,9 @@ def run_round(ctx: AutoCtx, round_no: int) -> Dict[str, Any]:
             fname = ("finding-%02d-%s.md" % (idx, cand["candidate_id"])
                      if ctx.cfg.output_lang == "en"
                      else "挖洞-发现-%02d-%s.md" % (idx, cand["candidate_id"]))
-            (reports_dir / fname).write_text(
-                render_finding_md(finding, lang=ctx.cfg.output_lang), encoding="utf-8")
+            EvidenceStore(ctx.root).write_text(
+                (reports_dir / fname).relative_to(ctx.root),
+                render_finding_md(finding, lang=ctx.cfg.output_lang))
             written.append(fname)
         stale_docs = sorted(prior_docs - set(written))
         stale_marker = ("> 状态更新：该报告来自旧版 S4 证据策略，本轮未能重新确认。"
@@ -789,9 +808,9 @@ def run_round(ctx: AutoCtx, round_no: int) -> Dict[str, Any]:
         for name in stale_docs:
             path = reports_dir / name
             if path.is_file():
-                old = path.read_text(encoding="utf-8", errors="replace")
+                old = EvidenceStore(ctx.root).read_text(path.relative_to(ctx.root))
                 if stale_marker not in old:
-                    path.write_text(stale_marker + old, encoding="utf-8")
+                    EvidenceStore(ctx.root).write_text(path.relative_to(ctx.root), stale_marker + old)
         if stale_docs:
             ctx.write_artifact(round_no, "S7", "superseded-finding-docs.json", {
                 "evidence_policy_version": S4_EVIDENCE_POLICY_VERSION,
@@ -817,9 +836,11 @@ def run_round(ctx: AutoCtx, round_no: int) -> Dict[str, Any]:
                         / ("round-%02d" % round_no) / "S4" / "runtime-lab.json")
     if runtime_lab_path.exists():
         try:
-            loaded_lab = json.loads(runtime_lab_path.read_text(encoding="utf-8"))
+            loaded_lab = store.read_artifact("S4", "runtime-lab.json")
             if isinstance(loaded_lab, dict):
                 runtime_lab = loaded_lab
+        except RunIdentityError:
+            raise
         except (OSError, ValueError, TypeError):
             runtime_lab = {}
     prior_consistency_actions = load_research_consistency_actions(
@@ -881,9 +902,10 @@ def run_round(ctx: AutoCtx, round_no: int) -> Dict[str, Any]:
                             / ("round-%02d" % round_no) / "S2"
                             / "research-strategy.json")
         try:
-            loaded_strategy = json.loads(
-                s2_strategy_path.read_text(encoding="utf-8"))
+            loaded_strategy = store.read_artifact("S2", "research-strategy.json")
             strategy = loaded_strategy if isinstance(loaded_strategy, dict) else {}
+        except RunIdentityError:
+            raise
         except (OSError, ValueError, TypeError):
             strategy = {}
     strategy_feedback = {}
@@ -920,10 +942,11 @@ def run_round(ctx: AutoCtx, round_no: int) -> Dict[str, Any]:
                          / ("round-%02d" % round_no) / "S4"
                          / "verification-matrix.json")
     try:
-        loaded_verification = json.loads(
-            verification_path.read_text(encoding="utf-8"))
+        loaded_verification = store.read_artifact("S4", "verification-matrix.json")
         verification_matrix = (loaded_verification
                                if isinstance(loaded_verification, dict) else {})
+    except RunIdentityError:
+        raise
     except (OSError, ValueError, TypeError):
         verification_matrix = {}
     research_agenda_outcomes = build_research_agenda_outcomes(
@@ -1192,7 +1215,8 @@ def run_round(ctx: AutoCtx, round_no: int) -> Dict[str, Any]:
         write_round_artifacts(ctx.root, ctx.cfg.name, round_no, ledger_rows, excluded,
                               summary, lang=ctx.cfg.output_lang)
         ctx.write_artifact(round_no, "S8", "llm-usage.json", ctx.llm.usage.to_dict())
-        store.save_stage("S8", {"ledger_rows": len(ledger_rows), "excluded": len(excluded),
+        store.save_stage("S8", {"ledger_dir": str(Path("ledger") / ctx.cfg.name / ("round-%02d" % round_no)),
+                                "ledger_rows": len(ledger_rows), "excluded": len(excluded),
                                 "research_memory": research_memory_info,
                                 "research_consistency": research_consistency_info,
                                 "research_consistency_actions":

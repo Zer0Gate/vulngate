@@ -328,4 +328,9 @@ def write_round_artifacts(workspace: Path, target: str, round_no: int,
     store.write_json(relative / "ledger.json",
                      {"round": round_no, "target": target, "rows": rows,
                       "excluded": excluded, "summary": summary})
+    store.write_json(relative / "publication-files.json", {
+        "files": [t["ledger_file"] % round_no, t["excl_file"] % round_no,
+                  t["sum_file"] % round_no, "ledger.json"],
+        "claim_status": "not-a-finding",
+    })
     return out

@@ -211,6 +211,13 @@ class EvidenceStore:
         # The caller-selected workspace may use the normal macOS /var alias.
         self.root = Path(workspace).resolve()
         self.root.mkdir(parents=True, exist_ok=True)
+        self.binding = None
+
+    def _binding_for(self, relative: str | Path):
+        from .artifact_identity import current_identity
+        binding = self.binding or current_identity(self.root)
+        path = Path(*self._parts(relative))
+        return binding if binding is not None and binding.covers(path) else None
 
     @staticmethod
     def _parts(relative: str | Path) -> tuple[str, ...]:
@@ -272,6 +279,9 @@ class EvidenceStore:
                     os.unlink(temp, dir_fd=parent)
                 except FileNotFoundError:
                     pass
+        binding = self._binding_for(relative)
+        if binding is not None:
+            binding.record(self, Path(*parts), content.encode("utf-8"))
         return self.root.joinpath(*parts)
 
     def write_json(self, relative: str | Path, data: Any) -> Path:
@@ -284,13 +294,14 @@ class EvidenceStore:
         loser reads the winner; no partially written destination is exposed.
         """
         parts = self._parts(relative)
+        content = public_json(data)
         with self._directory(parts[:-1], create=True) as parent:
             temporary = ".evidence-%s.tmp" % uuid.uuid4().hex
             fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
                          0o600, dir_fd=parent)
             try:
                 with os.fdopen(fd, "w", encoding="utf-8") as stream:
-                    stream.write(public_json(data))
+                    stream.write(content)
                     stream.flush()
                     os.fsync(stream.fileno())
                 os.link(temporary, parts[-1], src_dir_fd=parent, dst_dir_fd=parent,
@@ -298,6 +309,9 @@ class EvidenceStore:
                 os.fsync(parent)
             finally:
                 os.unlink(temporary, dir_fd=parent)
+        binding = self._binding_for(relative)
+        if binding is not None:
+            binding.record(self, Path(*parts), content.encode("utf-8"))
         return self.root.joinpath(*parts)
 
     def write_text(self, relative: str | Path, text: str) -> Path:
@@ -310,12 +324,43 @@ class EvidenceStore:
             content = public_json(data)
         return self._write(relative, content)
 
-    def read_text(self, relative: str | Path) -> str:
+    def read_bytes(self, relative: str | Path, *, max_bytes: int | None = None) -> bytes:
+        try:
+            return self._read_bytes(relative, max_bytes=max_bytes)
+        except FileNotFoundError:
+            raise
+        except OSError as exc:
+            if self._binding_for(relative) is not None:
+                from ..orchestrator.run_identity import RunIdentityError
+                raise RunIdentityError("bound artifact path is unsafe") from exc
+            raise
+
+    def _read_bytes(self, relative: str | Path, *, max_bytes: int | None = None) -> bytes:
         parts = self._parts(relative)
+        binding = self._binding_for(relative)
+        record = None
         with self._directory(parts[:-1], create=False) as parent:
             fd = os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
                          dir_fd=parent)
-            with os.fdopen(fd, "r", encoding="utf-8") as stream:
-                if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+            with os.fdopen(fd, "rb") as stream:
+                info = os.fstat(stream.fileno())
+                if not stat.S_ISREG(info.st_mode):
+                    if binding is not None:
+                        from .artifact_identity import refuse
+                        refuse("bound evidence source is not a regular file")
                     raise ValueError("evidence source must be a regular file")
-                return stream.read()
+                record = binding.expected_record(self, Path(*parts)) if binding is not None else None
+                if record is not None:
+                    max_bytes = record["size"]
+                if max_bytes is not None and info.st_size > max_bytes:
+                    from .artifact_identity import refuse
+                    refuse("artifact exceeds its declared binding size")
+                content = stream.read() if max_bytes is None else stream.read(max_bytes + 1)
+        if binding is not None:
+            binding.verify(Path(*parts), content, record)
+        elif max_bytes is not None and len(content) > max_bytes:
+            raise ValueError("evidence source exceeds read bound")
+        return content
+
+    def read_text(self, relative: str | Path) -> str:
+        return self.read_bytes(relative).decode("utf-8")

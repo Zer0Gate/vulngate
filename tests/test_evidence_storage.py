@@ -131,6 +131,9 @@ class ProjectionTests(unittest.TestCase):
             args = SimpleNamespace(workspace=directory, target="demo", round=1,
                                    manifest=str(manifest), lang="shell",
                                    authorized_staging=False, staging_host=[])
+            config = root / "config.json"
+            config.write_text(json.dumps({"name": "demo", "discovery_date": "2026-10-01"}))
+            args.config = str(config)
             terminal = io.StringIO()
             with patch.object(runtime, "ShellMatrixRunner") as runner_type:
                 runner = runner_type.return_value

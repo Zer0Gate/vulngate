@@ -26,6 +26,36 @@ Manifest 只保存摘要及版本标识，不保存原始配置/环境秘密。0
 目录与目录句柄 I/O 沿用 EvidenceStore；并发首次绑定只有一个完整记录获胜。
 JSON Schema 为 `schemas/run-manifest.json`，运行时仍只依赖标准库。
 
+## 当前父身份与落盘字节门禁（第二批）
+
+已比较的父身份通过有界执行 scope 传给 EvidenceStore、CheckpointStore，
+autonomous 每个线程任务分别复制上下文；执行结束/异常后清除，历史检查
+不继承执行身份。S1–S8/FUZZ、stage checkpoint、当轮 reports/ledger 的
+发布在 S0/artifact-bindings 保存路径、父摘要、实际序列化字节 SHA256/长度，
+schema 为 `run-artifact-binding-v1`。原 dict/list/text 形状不插入新字段。
+读取用目录句柄和 no-follow，先检查有界绑定记录，再读同一 fd 的字节并
+核对摘要/长度；缺失文件仍返回 missing，已存在但未绑定/漂移即拒绝。
+产物和记录是两个原子文件，不宣称跨文件事务；发布中断应拒绝而非补签。
+
+matrix/fallback 汇合、FUZZ 缓存、本轮 ledger 派生 coverage、S7 报告以及
+S8 四个发布文件的 resume 读回已接入。S4 保留词法路径，不能先解析到
+另一轮目录后借历史读取绕开绑定。历史轮次 coverage 仍是积累数据，
+不被重新签成当前执行证明。直接 helper 若不经控制器 scope，不声称完整执行验收。
+
+matrix 和 parallel-receipt（除历史 `--inspect`）要求 `--config`，重算完整
+Manifest 而不是接受 caller SHA。默认独立入口 options 为 `{"driver":"matrix"}`；
+接续 pipeline/autonomous 要传匹配的 `--identity-options` JSON 以及实际
+`--source-root`，否则拒绝而非更改既有身份。默认 S4/manifest.json 必须
+是当前父身份发布的精确字节。显式 `--manifest` 是 workspace 内的操作员
+输入：scope 外的清单由 fd 读取，实际消费的同一份字节摘要加入父执行选项；
+parallel-receipt 需同样传此参数，改变清单即身份不符，不支持 workspace 外输入。
+
+receipt 的 nonce 仅证明操作交接，必须另外校验 cells 的父身份、路径和
+实际字节，以及候选/基本 cell 形状；空/partial 矩阵可记录操作完成，但不能
+因此升级漏洞确认。compile-failed/precondition-unavailable 形状仍可交接。
+matrix deadline 到期 exit=3，身份拒绝 exit=2；receipt 契约拒绝 exit=2，
+历史 inspect/missing 保留 exit=0。inspect 不补签旧证据，也不宣称零副作用。
+
 隐式 workspace-root 审计排除控制器拥有的 `state/ledger/reports/poc` 输出目录
 及 Git 元数据。若这些名字实际是目标源码，必须显式配置 `source_dirs`，此时
 不会按输出目录忽略。源码 symlink/特殊文件目前拒绝，而非跟随未知范围。
@@ -40,10 +70,10 @@ pipeline 的调度/丰富候选只在本轮配置副本中变化，原操作员�
 
 整个 R06 仍为 partial，不能用上述 checkpoint 门禁推断下列边界已关闭：
 
-- 直接 stage/helper 和 matrix CLI 的完整执行身份入口。
-- 原始 cells、fallback/sequential convergence、parallel challenge/receipt 的
-  父身份和产物字节绑定；普通 dict/list 形状目前保持兼容，不随意插入字段。
-- S4/S8/report/ledger 的全链父身份；旧产物的非创建只读入口仍需逐一审计。
+- 直接 stage/helper 的完整执行身份入口及剩余产物/历史输入读取路径审计。
+- 同一轮多个 PoC、修复/重试、Java/shell lane 的 active attempt/spec 身份，
+  派生源码/JAR/运行时闭包和 effect 的 run/candidate/cell 精确归因；当前
+  父身份与字节绑定不能排除同父不同尝试的旧数据混入。
 - 镜像解析结果到实际 launch 的固定 image ID，以及工具/源码在校验到使用
   期间的 immutable snapshot/漂移门禁；一次 hash 不等于执行中冻结输入。
 - 实际选用 backend/运行时依赖身份与 enforced 证据，不把请求值当能力证明。

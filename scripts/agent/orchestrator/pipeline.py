@@ -16,6 +16,8 @@ import argparse
 import copy
 import json
 import sys
+from ..memory.artifact_identity import isolated_identity
+from .run_identity import RunIdentityError
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -81,14 +83,21 @@ def _conclusions(ctx: StageContext, summaries: Dict[str, Any]) -> Dict[str, str]
     return out
 
 
+@isolated_identity
 def run_round(ctx: StageContext, force: bool = False, only: Optional[str] = None) -> None:
     # Scheduled/enriched candidates are derived round state, not a rewrite of
     # the operator's config identity. Keep the original config for later calls.
     operator_config = ctx.config
     ctx._run_identity_refused = False
+    ctx.store.manifest_sha256 = None
     ctx.config = copy.deepcopy(operator_config)
     try:
         _run_round(ctx, force, only)
+    except RunIdentityError as exc:
+        ctx._run_identity_refused = True
+        ctx.store.write_artifact("S0", "run-identity-status.json", {
+            "status": "invalid-run-identity", "error": str(exc), "claim_status": "not-a-finding"})
+        print("[pipeline] refusing artifact identity: %s" % exc)
     finally:
         ctx.config = operator_config
 

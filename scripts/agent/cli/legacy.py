@@ -293,6 +293,9 @@ def build_parser() -> argparse.ArgumentParser:
     mx.add_argument("--target", required=True)
     mx.add_argument("--round", type=int, required=True)
     mx.add_argument("--manifest", default=None)
+    mx.add_argument("--config", help="full target config required for execution identity")
+    mx.add_argument("--source-root", help="actual source root for an existing prepared-target round")
+    mx.add_argument("--identity-options", help="JSON options matching the parent controller; default driver=matrix")
     mx.add_argument("--lang", default="java", choices=["java", "shell"],
                     help="'java' compiles/runs Java PoCs; 'shell' runs bash PoCs "
                          "(web apps/services) with HTTP_CODE/RESP_MATCH/EVIDENCE contract")
@@ -859,6 +862,10 @@ def build_parser() -> argparse.ArgumentParser:
     pr.add_argument("--target", required=True)
     pr.add_argument("--round", type=int, required=True)
     pr.add_argument("--candidate", required=True)
+    pr.add_argument("--config", help="full target config required except historical --inspect")
+    pr.add_argument("--manifest", help="same explicit operator matrix input used by the matrix command")
+    pr.add_argument("--source-root", help="actual source root matching the parent run")
+    pr.add_argument("--identity-options", help="JSON options matching the parent controller; default driver=matrix")
     pr.add_argument("--prepare", action="store_true")
     pr.add_argument("--verify", action="store_true")
     pr.add_argument("--inspect", action="store_true",
@@ -882,6 +889,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     try:
         return int(args.fn(args) or 0)
     except Exception as exc:  # pragma: no cover - surface harness errors as JSON
+        from agent.orchestrator.run_identity import RunIdentityError
+        if isinstance(exc, RunIdentityError):
+            _out({"status": "invalid-run-identity", "error": str(exc),
+                  "verified": False, "claim_status": "not-a-finding"})
+            return 2
         from agent.analysis.languages import SourceScanTimeout
         if isinstance(exc, SourceScanTimeout):
             _out({"status": "incomplete", "scope_complete": False,

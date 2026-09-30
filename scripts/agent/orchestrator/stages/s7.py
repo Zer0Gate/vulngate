@@ -5,6 +5,7 @@ helpers live in the common module.
 """
 
 from __future__ import annotations
+from ...memory.evidence_store import EvidenceStore
 
 from .common import (
     ALL_SUFFIXES,
@@ -182,8 +183,9 @@ def run_s7(ctx: StageContext, rows: List[Dict[str, Any]], summaries: Dict[str, A
         }
         fname = ("finding-%02d-%s.md" % (idx, cid) if ctx.config.output_lang == "en"
                  else "挖洞-发现-%02d-%s.md" % (idx, cid))
-        (reports_dir / fname).write_text(
-            render_finding_md(finding, lang=ctx.config.output_lang), encoding="utf-8")
+        EvidenceStore(ctx.workspace).write_text(
+            (reports_dir / fname).relative_to(ctx.workspace),
+            render_finding_md(finding, lang=ctx.config.output_lang))
         written.append(fname)
     stale_docs = sorted(prior_docs - set(written))
     stale_marker = ("> 状态更新：该报告来自旧版 S4 证据策略，当前轮次已无法用其材料确认此发现。"
@@ -191,9 +193,9 @@ def run_s7(ctx: StageContext, rows: List[Dict[str, Any]], summaries: Dict[str, A
     for name in stale_docs:
         path = reports_dir / name
         if path.is_file():
-            old = path.read_text(encoding="utf-8", errors="replace")
+            old = EvidenceStore(ctx.workspace).read_text(path.relative_to(ctx.workspace))
             if stale_marker not in old:
-                path.write_text(stale_marker + old, encoding="utf-8")
+                EvidenceStore(ctx.workspace).write_text(path.relative_to(ctx.workspace), stale_marker + old)
     if stale_docs:
         ctx.store.write_artifact("S7", "superseded-finding-docs.json", {
             "evidence_policy_version": S4_EVIDENCE_POLICY_VERSION,
@@ -204,7 +206,6 @@ def run_s7(ctx: StageContext, rows: List[Dict[str, Any]], summaries: Dict[str, A
             "superseded_docs": stale_docs,
             "evidence_policy_version": S4_EVIDENCE_POLICY_VERSION,
             "dir": str(reports_dir.relative_to(ctx.workspace))}
-
 
 
 

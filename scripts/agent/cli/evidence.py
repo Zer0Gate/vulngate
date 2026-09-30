@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from agent.cli.analysis import _ensure_coverage_analysis
+from agent.memory.artifact_identity import isolated_identity
 
 
 def _out(payload: Dict[str, Any]) -> None:
@@ -202,27 +203,42 @@ def _parallel_candidate_id(value: Any) -> str:
 def _parallel_artifact(store: Any, candidate: str,
                        value: Any) -> Optional[Dict[str, Any]]:
     """Validate one declared S4 matrix artifact without retaining its content."""
-    raw = str(value or "").replace("\\", "/").lstrip("/")
+    raw = str(value or "")
     expected_prefix = "S4/matrix-runs/%s/" % candidate
     if not raw.startswith(expected_prefix):
         return None
     try:
-        path = (store.base / raw).resolve()
-        path.relative_to(store.base.resolve())
+        store._store._parts(raw)
+        relative = store.base.relative_to(store.workspace) / raw
+        content = store._store.read_bytes(relative)
     except (OSError, ValueError):
         return None
-    if not path.is_file():
-        return None
-    try:
-        size = path.stat().st_size
-        digest = hashlib.sha256(path.read_bytes()).hexdigest()
-    except OSError:
-        return None
+    size = len(content)
+    digest = hashlib.sha256(content).hexdigest()
     if size <= 0:
         return None
+    if raw == expected_prefix + "cells.json":
+        try:
+            payload = json.loads(content)
+        except (ValueError, UnicodeError):
+            return None
+        if isinstance(payload, dict):
+            if any(k in payload for k in ("cells", "fallback_cells", "matrix_cells")):
+                payload = payload.get("cells", payload.get("fallback_cells", payload.get("matrix_cells")))
+            else:
+                results = payload.get("results", payload)
+                payload = results.get(candidate) if isinstance(results, dict) else None
+        if not isinstance(payload, list) or any(
+                not isinstance(cell, dict) or cell.get("candidate_id") != candidate
+                or not isinstance(cell.get("version"), str)
+                or not ("returncode" in cell or "compile_error" in cell)
+                or (cell.get("returncode") is not None and type(cell["returncode"]) is not int)
+                for cell in payload):
+            return None
     return {"path": raw, "sha256": digest, "size": size}
 
 
+@isolated_identity
 def cmd_parallel_receipt(args: argparse.Namespace) -> int:
     """Challenge-bind each spawned S4 candidate to a durable matrix receipt.
 
@@ -238,7 +254,11 @@ def cmd_parallel_receipt(args: argparse.Namespace) -> int:
     if not candidate:
         _out({"error": "candidate must be a path-safe id (1-80 chars)"})
         return 2
-    store = CheckpointStore(Path(args.workspace), args.target, args.round)
+    if getattr(args, "inspect", False) and not getattr(args, "prepare", False):
+        store = CheckpointStore(Path(args.workspace), args.target, args.round)
+    else:
+        from agent.orchestrator.run_identity import bind_cli_round
+        store = bind_cli_round(args)
     receipt_name = "parallel-receipt-%s.json" % candidate
     challenge_name = "parallel-receipt-%s.challenge.json" % candidate
     expected_artifact = "S4/matrix-runs/%s/cells.json" % candidate
@@ -409,5 +429,3 @@ def cmd_parallel_receipt(args: argparse.Namespace) -> int:
           "progress_count": progress_count,
           "artifact_count": len(all_artifacts), "claim_status": "not-a-finding"})
     return 0
-
-

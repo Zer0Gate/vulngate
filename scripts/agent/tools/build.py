@@ -2304,26 +2304,35 @@ def converge_s4_cells(workspace: Path, target: str, round_no: int,
     deduplicated by their serialized cell content.
     """
     root = Path(workspace).resolve()
+    from ..orchestrator.run_identity import RunIdentityError
     target = _safe_component(target, "target")
     candidate_id = _safe_component(candidate_id, "candidate_id")
     round_no = int(round_no)
     if round_no < 1:
         raise ValueError("round must be a positive integer")
     round_dir = "round-%02d" % round_no
-    s4_dir = _contained_path(
-        root, "state/%s/%s/S4" % (target, round_dir), "S4 artifact directory")
-    matrix_file = _contained_path(
-        root, "state/%s/%s/S4/matrix-runs/%s/cells.json" % (
-            target, round_dir, candidate_id), "candidate matrix artifact")
+    # Preserve the intended lexical identity. Resolving an alias first could
+    # turn current-round data into an out-of-scope historical read.
+    s4_dir = root / "state" / target / round_dir / "S4"
+    matrix_file = s4_dir / "matrix-runs" / candidate_id / "cells.json"
+    storage = EvidenceStore(root)
+    if s4_dir.exists() and storage._binding_for(s4_dir.relative_to(root)) is not None:
+        try:
+            with storage._directory(s4_dir.relative_to(root).parts, create=False):
+                pass
+        except OSError as exc:
+            raise RunIdentityError("bound S4 directory is unsafe") from exc
     candidates = []
     if runner_cells:
         scoped_runner = _extract_s4_cells(runner_cells, candidate_id)
         if scoped_runner:
             candidates.append(("runner", scoped_runner))
-    if matrix_file.is_file() and matrix_file.resolve().is_relative_to(s4_dir.resolve()):
+    if matrix_file.is_file():
         try:
             candidates.append(("persisted", _extract_s4_cells(
-                json.loads(matrix_file.read_text(encoding="utf-8")), candidate_id)))
+                json.loads(storage.read_text(matrix_file.relative_to(root))), candidate_id)))
+        except RunIdentityError:
+            raise
         except (OSError, ValueError):
             pass
     if s4_dir.exists():
@@ -2337,7 +2346,9 @@ def converge_s4_cells(workspace: Path, target: str, round_no: int,
             except OSError:
                 continue
             try:
-                cells = _extract_s4_cells(json.loads(path.read_text(encoding="utf-8")), candidate_id)
+                cells = _extract_s4_cells(json.loads(EvidenceStore(root).read_text(path.relative_to(root))), candidate_id)
+            except RunIdentityError:
+                raise
             except (OSError, ValueError):
                 cells = []
             if cells:

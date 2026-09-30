@@ -26,6 +26,7 @@ from agent.tools.build import (
 from agent.tools.github_auth import github_token_source
 from agent.memory.evidence_store import public_json
 from agent.memory.raw_vault import RawVault
+from agent.memory.artifact_identity import isolated_identity
 from agent.tools import source_evidence as se
 
 
@@ -275,6 +276,7 @@ def _shell_poc_spec(s: Dict[str, Any]) -> ShellPOCSpec:
     )
 
 
+@isolated_identity
 def cmd_matrix(args: argparse.Namespace) -> int:
     workspace = Path(args.workspace).resolve()
     from agent.analysis.audit_budget import (
@@ -313,14 +315,29 @@ def cmd_matrix(args: argparse.Namespace) -> int:
     if args.authorized_staging and not staging_hosts:
         _out({"error": "--authorized-staging requires at least one --staging-host allowlist entry"})
         return 2
-    manifest_path = Path(args.manifest).resolve() if args.manifest else \
+    from agent.orchestrator.run_identity import bind_cli_round
+    identity_store = bind_cli_round(args)
+    persisted_budget = load_round_budget(workspace, args.target, args.round)
+    remaining = int(round_budget_snapshot(persisted_budget)["remaining_seconds"])
+    if remaining < 1:
+        _out({"error": "audit-round deadline expired; refusing matrix run"})
+        return 3
+    round_execution_budget = S4ExecutionBudget(
+        round_timeout_seconds=min(45 * 60, remaining),
+        candidate_timeout_seconds=min(15 * 60, remaining))
+    manifest_path = Path(args.manifest).absolute() if args.manifest else \
         workspace / "state" / args.target / ("round-%02d" % args.round) / "S4" / "manifest.json"
     if not manifest_path.exists():
         _out({"error": "manifest not found", "path": str(manifest_path),
               "hint": "provide --manifest with {specs:[...], jars:{version:[paths]}} "
                       "(shell PoCs: --lang shell with {specs:[{candidate_id,script,cells}]})"})
         return 2
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    from agent.memory.evidence_store import EvidenceStore
+    content = identity_store.cli_matrix_input
+    if content is None:
+        relative = identity_store.cli_matrix_path if args.manifest else manifest_path.relative_to(workspace)
+        content = EvidenceStore(workspace).read_bytes(relative)
+    manifest = json.loads(content)
     raw_specs = manifest.get("specs", [])
     if not raw_specs:
         _out({"error": "manifest has no specs"})

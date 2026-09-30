@@ -765,6 +765,8 @@ def refresh_candidate_coverage(store: CoverageStore,
     coverage summary while retaining the ledger as the authoritative record.
     """
     import json as _json
+    from ..memory.evidence_store import EvidenceStore
+    from ..orchestrator.run_identity import RunIdentityError
 
     ledger_root = (workspace / "ledger" / target)
     rows_by_identity: Dict[Tuple[str, str], Dict[str, Any]] = {}
@@ -790,7 +792,9 @@ def refresh_candidate_coverage(store: CoverageStore,
     if ledger_root.exists():
         for path in sorted(ledger_root.glob("round-*/ledger.json")):
             try:
-                payload = _json.loads(path.read_text(encoding="utf-8"))
+                payload = _json.loads(EvidenceStore(workspace).read_text(path.relative_to(workspace)))
+            except RunIdentityError:
+                raise
             except (OSError, ValueError):
                 continue
             number = int(payload.get("round") or 0)
