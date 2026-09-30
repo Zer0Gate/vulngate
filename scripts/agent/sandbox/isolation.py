@@ -21,6 +21,8 @@ import shutil
 import subprocess
 import hashlib
 import os
+import time
+import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple, TypeAlias
 
@@ -80,7 +82,7 @@ class IsolationBackend:
 
 
 class CgroupV2Controller:
-    """Best-effort delegated cgroup v2 controller with fail-closed attach."""
+    """Per-launch delegated cgroup v2 with verified attach and cleanup."""
 
     ROOT = Path("/sys/fs/cgroup")
 
@@ -89,7 +91,7 @@ class CgroupV2Controller:
         self.limits = {
             "memory.max": str(2 * 1024 * 1024 * 1024),
             "pids.max": "128",
-            "cpu.max": "3600000 100000",
+            "cpu.max": "400000 100000",
         }
         self.attached_pid: Optional[int] = None
 
@@ -104,12 +106,17 @@ class CgroupV2Controller:
         if not cls.available():
             return None
         suffix = hashlib.sha256((str(workspace) + name).encode()).hexdigest()[:16]
-        path = cls.ROOT / ("vulngate-" + suffix)
+        path = cls.ROOT / ("vulngate-" + suffix + "-" + uuid.uuid4().hex[:12])
         try:
-            path.mkdir(exist_ok=True)
+            path.mkdir()
             controller = cls(path)
+            if any(not (path / filename).exists() for filename in (
+                    "cgroup.procs", "cgroup.events", "cgroup.kill")):
+                raise OSError("delegated cgroup lacks verified cleanup support")
             for filename, value in controller.limits.items():
                 (path / filename).write_text(value, encoding="ascii")
+                if " ".join((path / filename).read_text(encoding="ascii").split()) != value:
+                    raise OSError("delegated cgroup limit did not take effect")
             return controller
         except OSError:
             try:
@@ -120,6 +127,9 @@ class CgroupV2Controller:
 
     def attach(self, pid: int) -> None:
         (self.path / "cgroup.procs").write_text(str(int(pid)), encoding="ascii")
+        if str(int(pid)) not in (self.path / "cgroup.procs").read_text(
+                encoding="ascii").split():
+            raise OSError("cgroup membership readback failed")
         self.attached_pid = int(pid)
 
     def snapshot(self) -> Dict[str, Any]:
@@ -128,10 +138,22 @@ class CgroupV2Controller:
                 "attached_pid": self.attached_pid, "enforced": self.attached_pid is not None}
 
     def close(self) -> None:
-        try:
-            self.path.rmdir()
-        except OSError:
-            pass
+        def populated() -> bool:
+            events = dict(line.split(maxsplit=1) for line in (
+                self.path / "cgroup.events").read_text(encoding="ascii").splitlines()
+                if len(line.split(maxsplit=1)) == 2)
+            if events.get("populated") not in {"0", "1"}:
+                raise OSError("cgroup population status unavailable")
+            return events["populated"] == "1"
+
+        if populated():
+            (self.path / "cgroup.kill").write_text("1", encoding="ascii")
+        deadline = time.monotonic() + 2.0
+        while populated():
+            if time.monotonic() >= deadline:
+                raise OSError("cgroup remained populated after kill")
+            time.sleep(0.05)
+        self.path.rmdir()
 
 
 class LinuxBubblewrapBackend(IsolationBackend):

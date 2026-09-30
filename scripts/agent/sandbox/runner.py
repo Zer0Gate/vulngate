@@ -250,7 +250,7 @@ def prepare_posix_resource_limited_command(
     try:
         preflight = subprocess.run(
             _resource_limited_argv([
-                sys.executable, "-c", limit_check,
+                sys.executable, "-I", "-S", "-c", limit_check,
                 str(resource_limits["cpu_seconds_per_process"]),
                 str(resource_limits["max_file_bytes"]),
                 str(resource_limits["max_open_files"]),
@@ -260,7 +260,9 @@ def prepare_posix_resource_limited_command(
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE, text=True,
             timeout=max(1, min(int(preflight_timeout), 5)), check=False,
-            env=env)
+            # The verifier runs before the target sandbox exists. Never pass
+            # target-controlled BASH_ENV, loader, or Python startup hooks to it.
+            env={"PATH": POC_SAFE_PATH, "LC_ALL": "C"})
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise PermissionError(
             "required POSIX resource-limit preflight failed: %s" %

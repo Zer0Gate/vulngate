@@ -22,6 +22,7 @@ import signal
 import socket
 import ssl
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -43,9 +44,9 @@ from ..sandbox.runner import (CommandRunner, minimal_poc_env,
 from .redaction import redact_text
 
 
-SERVICE_SCHEMA_VERSION = "service-lifecycle-v6-isolation-backend"
-PROCESS_SCHEMA_VERSION = "service-processes-v4-isolation-contract"
-SERVICE_ISOLATION_POLICY_VERSION = "managed-service-isolation-backend-v1"
+SERVICE_SCHEMA_VERSION = "service-lifecycle-v7-gated-cgroup-start"
+PROCESS_SCHEMA_VERSION = "service-processes-v5-cgroup-cleanup"
+SERVICE_ISOLATION_POLICY_VERSION = "managed-service-isolation-backend-v2-gated-start"
 CLAIM_STATUS = "not-a-finding"
 MAX_COMMAND_TOKENS = 32
 MAX_ENV_KEYS = 32
@@ -498,6 +499,65 @@ class ServiceLifecycle:
         self._state = result
         return result
 
+    def _start_cgroup_gated(self, command: List[str], env: Dict[str, str]) -> subprocess.Popen:
+        """Attach a trusted, blocked launcher before it receives target argv."""
+        if self.cgroup_controller is None:
+            raise PermissionError("cgroup gate requires a prepared controller")
+        payload = json.dumps({"command": command, "env": env},
+                             ensure_ascii=False).encode("utf-8")
+        if len(payload) > 65536:
+            raise PermissionError("isolated service command exceeds gate limit")
+        gate = Path(__file__).resolve().parents[1] / "sandbox" / "cgroup_gate.py"
+        reader, writer = os.pipe()
+        process: Optional[subprocess.Popen] = None
+        try:
+            process = subprocess.Popen(
+                [sys.executable, "-I", "-S", "-B", str(gate), str(reader)],
+                cwd=str(self.working_dir),
+                env={"PATH": os.defpath, "LC_ALL": "C"},
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                text=True, start_new_session=True, pass_fds=(reader,))
+            os.close(reader)
+            reader = -1
+            self.cgroup_controller.attach(int(process.pid))
+            self.resource_limits["cgroup_v2"] = self.cgroup_controller.snapshot()
+            view = memoryview(payload)
+            while view:
+                view = view[os.write(writer, view):]
+            os.close(writer)
+            writer = -1
+            return process
+        except BaseException as exc:
+            self.resource_limit_error = "cgroup gated start failed: %s" % type(exc).__name__
+            if process is not None:
+                try:
+                    process.kill()
+                except ProcessLookupError:
+                    pass
+                try:
+                    process.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    self.resource_limit_error = "cgroup gate process did not exit"
+            raise
+        finally:
+            for fd in (reader, writer):
+                if fd >= 0:
+                    os.close(fd)
+
+    def _close_cgroup(self) -> bool:
+        controller = self.cgroup_controller
+        if controller is None:
+            return True
+        try:
+            controller.close()
+        except OSError as exc:
+            self.resource_limit_error = "cgroup cleanup failed: %s" % type(exc).__name__
+            self.resource_limits.setdefault("cgroup_v2", {})["cleanup_status"] = "incomplete"
+            return False
+        self.resource_limits.setdefault("cgroup_v2", {})["cleanup_status"] = "complete"
+        self.cgroup_controller = None
+        return True
+
     def _start_process_tree_monitor(self) -> None:
         limits = self.resource_limits.get("process_tree_rss")
         if not isinstance(limits, dict) or self.process is None:
@@ -810,7 +870,14 @@ class ServiceLifecycle:
         # Reuse an already-running authorized local service.  This makes the
         # ordinary S4 matrix and the runtime lab composable without launching
         # two copies of the target.
-        existing = self._probe()
+        # A command probe can execute workspace code. When we intend to
+        # launch a managed service, it must not run on the host before that
+        # service has entered its isolation backend. URL probes are passive
+        # loopback observations and can still recognize an external service.
+        existing = ({"kind": "command", "ready": False,
+                     "status": "deferred-until-isolated"}
+                    if self.start_command and self.health_command
+                    and not self.health_url else self._probe())
         if existing.get("ready"):
             return self._base_result("external-ready", True, health=existing)
         if not self.start_command:
@@ -851,6 +918,14 @@ class ServiceLifecycle:
                                      health=existing, reason=reason)
         service_env = minimal_poc_env({
             **self.env, "VULNGATE_SERVICE_LIFECYCLE": "true"})
+        # Host-side bwrap/container clients must not inherit target startup
+        # hooks. The backend passes service_env explicitly to its child via
+        # --setenv/-e only after it has established the isolation boundary.
+        launcher_env = {"PATH": os.defpath, "LC_ALL": "C"}
+        if self.isolation_descriptor.backend.endswith("runtime-container"):
+            for key in ("HOME", "XDG_RUNTIME_DIR"):
+                if os.environ.get(key):
+                    launcher_env[key] = os.environ[key]
         try:
             limited_command, self.resource_limits = (
                 prepare_posix_resource_limited_command(
@@ -878,8 +953,11 @@ class ServiceLifecycle:
             self.approval.request(
                 "policy_denied", "service resource limit preflight: " +
                 self.resource_limit_error)
-            self._release_lock()
-            return self._base_result("policy-denied", False,
+            cleanup_complete = self._close_cgroup()
+            if cleanup_complete:
+                self._release_lock()
+            return self._base_result("policy-denied" if cleanup_complete
+                                     else "cleanup-incomplete", False,
                                      health=existing,
                                      reason="service resource limits unavailable")
         try:
@@ -888,32 +966,33 @@ class ServiceLifecycle:
             work_budget = getattr(self.execution_budget, "work_budget", None)
             if work_budget is not None:
                 work_budget.acquire_process()
-            self.process = subprocess.Popen(
-                isolated_command,
-                cwd=str(self.working_dir),
-                env=service_env,
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                text=True, start_new_session=True)
             if self.cgroup_controller is not None:
-                try:
-                    self.cgroup_controller.attach(int(self.process.pid))
-                    self.resource_limits["cgroup_v2"] = self.cgroup_controller.snapshot()
-                except OSError as exc:
-                    self.resource_limit_error = "cgroup v2 attach failed: %s" % type(exc).__name__
-                    self._cleanup_managed_process_tree(immediate=True)
-                    raise PermissionError(self.resource_limit_error) from exc
+                self.process = self._start_cgroup_gated(isolated_command, launcher_env)
+            else:
+                self.process = subprocess.Popen(
+                    isolated_command,
+                    cwd=str(self.working_dir),
+                    env=launcher_env,
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    text=True, start_new_session=True)
             self._managed_service_started = True
             self.registry_pid = int(self.process.pid)
             self._register_process(self.registry_pid)
             self._start_process_tree_monitor()
         except WorkBudgetExceeded as exc:
-            self._release_lock()
+            cleanup_complete = self._close_cgroup()
+            if cleanup_complete:
+                self._release_lock()
             return self._base_result(
-                "budget-exhausted", False, health=existing,
+                "budget-exhausted" if cleanup_complete else "cleanup-incomplete",
+                False, health=existing,
                 reason="shared process budget exhausted: %s" % str(exc)[:160])
-        except OSError as exc:
-            self._release_lock()
-            return self._base_result("run-failed", False,
+        except (OSError, PermissionError) as exc:
+            cleanup_complete = self._close_cgroup()
+            if cleanup_complete:
+                self._release_lock()
+            return self._base_result("run-failed" if cleanup_complete
+                                     else "cleanup-incomplete", False,
                                      reason=type(exc).__name__)
         deadline = time.monotonic() + self.startup_timeout
         last_health: Dict[str, Any] = {}
@@ -986,10 +1065,40 @@ class ServiceLifecycle:
                 except (OSError, PermissionError) as exc:
                     stop_status = type(exc).__name__
         tree_limits = self.resource_limits.get("process_tree_rss")
+        had_cgroup = self.cgroup_controller is not None
+        cgroup_cleaned = self._close_cgroup()
+        if had_cgroup and cgroup_cleaned and isinstance(tree_limits, dict):
+            # The kernel-wide cgroup kill covers descendants missed by PID
+            # sampling, without claiming the runtime monitor was healthy.
+            tree_limits["cleanup_status"] = "complete"
+            tree_limits["cleanup_via"] = "cgroup-v2"
+        if had_cgroup and cgroup_cleaned and self.process is not None:
+            try:
+                self.process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                cgroup_cleaned = False
+                self.resource_limit_error = "cgroup leader remained alive after cleanup"
+                self.resource_limits.setdefault("cgroup_v2", {})[
+                    "cleanup_status"] = "leader-unverified"
+                try:
+                    self.process.kill()
+                    self.process.wait(timeout=2)
+                except (OSError, subprocess.TimeoutExpired):
+                    pass
+        if (had_cgroup and cgroup_cleaned and self.process is not None
+                and self.process.poll() is not None
+                and stop_status == "cleanup-incomplete"):
+            # PID sampling can be inconclusive after the leader exits, but a
+            # successfully removed cgroup proves its descendants are gone.
+            stop_status = "stopped"
+        if not cgroup_cleaned:
+            stop_status = "cleanup-incomplete"
         still_active = (stop_status in {"cleanup-incomplete", "stop-timeout"}
                         or (isinstance(tree_limits, dict)
                             and tree_limits.get("cleanup_status") in {
                                 "incomplete", "unverified"}))
+        if self.process is not None:
+            stopped = self.process.poll() is not None and not still_active
         if (self.process is not None and self.process.poll() is not None
                 and not still_active):
             self.process = None
@@ -997,9 +1106,6 @@ class ServiceLifecycle:
         if not still_active:
             self.registry_pid = None
             self._release_lock()
-            if self.cgroup_controller is not None:
-                self.cgroup_controller.close()
-                self.cgroup_controller = None
         return {
             "status": stop_status,
             "stopped": stopped,
@@ -1007,6 +1113,9 @@ class ServiceLifecycle:
                 tree_limits.get("cleanup_status", "")
                 if isinstance(tree_limits, dict) else ""),
             "process_registry_error": self.registry_error,
+            "cgroup_cleanup_status": (
+                self.resource_limits.get("cgroup_v2", {}).get("cleanup_status", "")
+                if had_cgroup else "not-applicable"),
             "claim_status": CLAIM_STATUS,
         }
 

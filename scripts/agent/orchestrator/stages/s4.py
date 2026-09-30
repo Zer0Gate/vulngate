@@ -203,7 +203,14 @@ def run_s4(ctx: StageContext) -> Dict[str, Any]:
                 "claim_status": "not-a-finding",
             }
     finally:
-        service.stop()
+        service_stop = service.stop()
+    if service_stop.get("status") == "cleanup-incomplete":
+        # A failed teardown is a safety gap even if the preceding probes
+        # yielded observations. Keep those observations but do not present
+        # the runtime lab as a cleanly completed S4 run.
+        runtime_lab["status"] = "cleanup-incomplete"
+        runtime_lab["reason"] = "managed service teardown was not verified"
+    runtime_lab["service_cleanup"] = service_stop
     runtime_lab_ref = "state/%s/round-%02d/S4/runtime-lab.json" % (
         ctx.target, ctx.round_no)
     ctx.store.write_artifact("S4", "runtime-lab.json", runtime_lab)
@@ -214,6 +221,10 @@ def run_s4(ctx: StageContext) -> Dict[str, Any]:
         cells, convergence = converge_s4_cells(
             ctx.workspace, ctx.target, ctx.round_no, cid, results.get(cid, []))
         summaries[cid] = summarize_candidate(cells)
+        if service_stop.get("status") == "cleanup-incomplete":
+            summaries[cid]["service_cleanup_status"] = "incomplete"
+            summaries[cid]["execution_state"] = "run-failed"
+            summaries[cid]["harness_error"] = "managed service teardown was not verified"
         summaries[cid]["s4_result_sources"] = convergence["sources"]
         summaries[cid]["s4_persisted_matrix"] = convergence["persisted_matrix"]
         candidate_lab = (runtime_lab.get("candidate_status") or {}).get(str(cid))
@@ -263,7 +274,5 @@ def run_s4(ctx: StageContext) -> Dict[str, Any]:
     return {"summaries": summaries, "runtime_lab": runtime_lab,
             "evidence_policy_version": S4_EVIDENCE_POLICY_VERSION,
             "execution_budget": execution_budget.snapshot()}
-
-
 
 
