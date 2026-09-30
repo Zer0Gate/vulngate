@@ -1,6 +1,21 @@
 # VulnGate 整改续接记录（2026-09-29）
 
-## 2026-10-01 增量：嵌套硬资源限制单调收紧修复（远端待验收）
+## 2026-10-01 增量：嵌套硬资源限制单调收紧修复（源码远端已验收）
+
+### 最新验收状态（优先于下方提交前候选记录）
+
+源码 `aa235d7e9e6cc6cf763d8e656ffb1dd0638e433b` 已推送，run `36787893737`
+COMPLETED/SUCCESS：macOS 3.10 `110133585114`、macOS 3.13 `110133585083`、
+Ubuntu 3.10 `110133585154`、Ubuntu 3.13 `110133585192`、security `110133585163`、
+test 聚合 `110134482087` 全部成功。真实隔离 `110133584964` 运行 4 项（8.022s），
+OK、无 skip；独立 CodeQL SUCCESS，PR merge ref open alerts=0。关键 gated-service
+三项本地连续重复 8 轮、24 项（28.174s）成功；这些重复测试不是硬件压力测量。
+所有源码 jobs 与本地测试/watch 进程已终态。随后仅提交状态文档，文档新 HEAD CI
+需单独查询，不能复用源码 HEAD 全绿结论。工作树干净、本地/远端/PR 源码一致。
+main 保护读回 test/security required、1 approval、enforce_admins=true；PR 草稿/审核待办，
+没有合并、发布或重装。此结果关闭本批嵌套限额兼容性验收，不关闭整个 R02/R06。
+
+### 提交前候选记录（历史）
 
 延续 bc7c077，不重做 R06 checkpoint。bc7c077 的 run `36787181163` 已终态 FAILURE：
 macOS 3.10 job `110131281707` 在 `test_cgroup_gate_holds_target_until_attach_and_releases_it`
@@ -23,7 +38,7 @@ Ruff/mypy（7 模块）/compileall/diff-check/内嵌 bash 语法通过。源码�
 精确 HEAD 的四矩阵、real-isolation 和 CodeQL 验收，不使用旧 HEAD 成功替代。
 之前 Docker 身份发现/未决创建清理失败的根因仍未知，此补丁不宣称关闭该缺口或整个 R02。
 
-下一步先验证本候选新 HEAD CI；通过后继续 R06 的 matrix/cells/receipt/report 身份链，
+下一步先核对状态文档 HEAD CI，然后继续 R06 的 matrix/cells/receipt/report 身份链，
 范围和兼容性要求见下方交接。没有合并、发布或插件刷新，完整整改目标 active。
 
 ## 2026-10-01 03:12 北京时间：额度交接与最新 CI 失败（当前断点）
