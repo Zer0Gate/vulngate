@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 
-EFFECT_SCHEMA_VERSION = "observed-effect-v1"
+EFFECT_SCHEMA_VERSION = "observed-effect-v2"
 EFFECT_KINDS = (
     "http-semantic", "filesystem-diff", "process-effect", "fixture-db",
     "jvm-effect", "jvm-protocol", "authorization-state",
