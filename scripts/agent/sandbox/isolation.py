@@ -21,6 +21,7 @@ import shutil
 import subprocess
 import hashlib
 import os
+import stat
 import time
 import uuid
 import json
@@ -33,6 +34,27 @@ from ..orchestrator.security_types import IsolationState
 
 
 ISOLATION_SCHEMA_VERSION = "isolation-backend-v1"
+_CONTROLLER_READ_ONLY_DIRS = ("ledger", "reports", "poc")
+
+
+def _prepare_controller_output_mounts(workspace: Path) -> Dict[str, Path]:
+    """Validate reserved output paths before exposing a service workspace."""
+    root = workspace.resolve(strict=True)
+    paths: Dict[str, Path] = {}
+    for name in ("state", *_CONTROLLER_READ_ONLY_DIRS):
+        path = root / name
+        try:
+            path.mkdir(mode=0o700)
+        except FileExistsError:
+            pass
+        try:
+            info = path.lstat()
+        except OSError as exc:
+            raise PermissionError("controller output mount is unavailable: " + name) from exc
+        if not stat.S_ISDIR(info.st_mode):
+            raise PermissionError("controller output mount is not a real directory: " + name)
+        paths[name] = path
+    return paths
 
 
 def _version(executable: str) -> str:
@@ -206,11 +228,12 @@ class LinuxBubblewrapBackend(IsolationBackend):
             version=_version(executable),
             available=True,
             network="private-network-namespace-loopback-only",
-            filesystem="private-mount-namespace-workspace-plus-runtime",
+            filesystem="workspace-rw-with-protected-controller-outputs",
             capabilities=(
                 "mount-namespace", "pid-namespace", "network-namespace",
                 "ipc-namespace", "uts-namespace", "read-only-system-runtime",
-                "workspace-bind", "die-with-parent", "cgroup-v2",
+                "workspace-bind", "ephemeral-state-tmpfs",
+                "read-only-controller-outputs", "die-with-parent", "cgroup-v2",
             ),
         )
 
@@ -219,17 +242,22 @@ class LinuxBubblewrapBackend(IsolationBackend):
         if self._info_reader is not None or self._context_fds:
             raise PermissionError("backend already owns a service context")
         self.workspace, self.working_dir = workspace.resolve(), working_dir.resolve()
+        output_mounts = _prepare_controller_output_mounts(self.workspace)
         self._info_reader, self._info_writer = os.pipe()
         self._ready_reader, self._ready_writer = os.pipe()
-        # Do not bind the host root.  Only standard runtime paths are exposed;
-        # the audit workspace is the sole writable target tree.
+        # Do not bind the host root. Only standard runtime paths and the audit
+        # workspace are exposed; controller outputs are overmounted below.
         args = [
             self.executable, "--die-with-parent", "--new-session",
             "--unshare-user", "--unshare-pid", "--unshare-ipc",
             "--unshare-uts", "--unshare-net", "--proc", "/proc",
             "--cap-drop", "ALL",
             "--dev", "/dev", "--tmpfs", "/tmp", "--dir", "/workspace",
-            "--bind", str(workspace), "/workspace",
+            "--bind", str(self.workspace), "/workspace",
+            "--tmpfs", "/workspace/state",
+            *[arg for name in _CONTROLLER_READ_ONLY_DIRS
+              for arg in ("--ro-bind", str(output_mounts[name]),
+                          "/workspace/" + name)],
             "--info-fd", str(self._info_writer), "--clearenv",
         ]
         for path in ("/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc"):
@@ -364,8 +392,9 @@ class ContainerBackend(IsolationBackend):
             version=_version(executable),
             available=True,
             network="container-network-none",
-            filesystem="read-only-container-workspace-bind",
+            filesystem="workspace-rw-with-protected-controller-outputs",
             capabilities=("network-none", "read-only-root", "workspace-bind",
+                           "ephemeral-state-tmpfs", "read-only-controller-outputs",
                            "cap-drop-all", "no-new-privileges", "pids-limit",
                            "memory-max-2g", "cpu-max-4"),
         )
@@ -375,6 +404,7 @@ class ContainerBackend(IsolationBackend):
         if self._run_token is not None:
             raise PermissionError("container backend already owns a service")
         self.workspace, self.working_dir = workspace.resolve(), working_dir.resolve()
+        output_mounts = _prepare_controller_output_mounts(self.workspace)
         self._run_token = uuid.uuid4().hex
         relative = "."
         if _contained(working_dir, workspace):
@@ -386,7 +416,12 @@ class ContainerBackend(IsolationBackend):
             "--read-only", "--memory", "2g", "--cpus", "4",
             "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
             "--pids-limit", "128", "--tmpfs", "/tmp:rw,noexec,nosuid,nodev", "-v",
-            "%s:/workspace:rw" % workspace, "-w", relative,
+            "%s:/workspace:rw" % self.workspace,
+            "--tmpfs", "/workspace/state:rw,noexec,nosuid,nodev,size=536870912",
+            *[arg for name in _CONTROLLER_READ_ONLY_DIRS
+              for arg in ("-v", "%s:/workspace/%s:ro" %
+                          (output_mounts[name], name))],
+            "-w", relative,
             "--ulimit", "core=0:0", "--ulimit", "fsize=67108864:67108864",
             "--ulimit", "nofile=512:512",
         ]

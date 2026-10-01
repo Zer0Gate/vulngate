@@ -7,6 +7,10 @@ redefine the current runtime contract.
 - Runtime-lab managed services require a concrete isolation backend. Linux
   prefers bubblewrap namespaces with delegated cgroup v2; macOS requires a
   configured container or lightweight VM. A missing backend fails closed.
+- Managed services retain write access to ordinary workspace paths. Their
+  `/workspace/state` is ephemeral and `ledger/`, `reports/`, and `poc/` are
+  read-only; this protects controller outputs from the service, not from other
+  processes running as the workspace owner.
 - An already-running external service is not sandboxed or monitored by
   VulnGate; its network and filesystem access are recorded as unknown.
 - HTTP semantic predicates are bounded and run in memory. Only predicate IDs,

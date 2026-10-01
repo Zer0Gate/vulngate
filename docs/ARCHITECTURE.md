@@ -134,6 +134,10 @@ bound to `run_id + config_digest + expiry`, and a successful POSIX resource-limi
 preflight. Linux's preferred backend also attaches cgroup-v2 hard limits when
 delegation is available; macOS requires a configured container/lightweight-VM
 backend. A repository `allow_unconfined_start` boolean is never sufficient.
+The service still receives a writable application workspace, but host `state/`
+is replaced with a bounded ephemeral tmpfs and `ledger/`, `reports/`, and
+`poc/` are mounted read-only. This keeps approvals and controller evidence out
+of the target service's writable view while preserving ephemeral service state.
 Managed services inherit the per-process CPU, file-size, descriptor, UID-process,
 address-space and core-dump limits recorded in the service result and
 `S4/processes.json`. A managed service also gets the sampled 2 GiB process-tree

@@ -24,7 +24,9 @@ JSON 产物：这些通道以非空占位符替换；空值保持空值，因此
 文件写入在选定 workspace 内逐级通过目录描述符完成，拒绝路径逃逸与后代
 符号链接；新目录权限 0700，新文件权限 0600；唯一临时文件、fsync、原子替换。
 权限设置或写入失败会报错，不会继续报告保存成功。此隔离不抵御同 UID 或 root
-进程，也不能代替 PoC 沙箱。
+宿主进程，也不能代替 PoC 沙箱。托管服务 backend 另将 `/workspace/state` 覆盖为
+临时文件系统，并把宿主 `ledger/`、`reports/`、`poc/` 只读挂载；这是针对目标服务的
+容器边界，不防护其他以同一宿主用户运行的进程。
 
 CLI 的 staging-exec/staging-copy 默认输出隐藏远端 stdout/stderr，但保留退出码。
 经过明确 `--authorized-staging` 的操作者可以额外使用 `--show-raw-output`，

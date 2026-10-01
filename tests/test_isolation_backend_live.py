@@ -72,6 +72,16 @@ class LiveIsolationBackendTests(unittest.TestCase):
     def fixture(self, backend, *, timeout_health=False):
         workspace = Path(self.enterContext(tempfile.TemporaryDirectory(
             prefix="vulngate-live-workspace-")))
+        state_dir = workspace / "state"
+        state_dir.mkdir(mode=0o700)
+        (state_dir / "approval-log.jsonl").write_text("host-approval", encoding="utf-8")
+        protected_outputs = {}
+        for name in ("ledger", "reports", "poc"):
+            output_dir = workspace / name
+            output_dir.mkdir(mode=0o700)
+            protected = output_dir / "controller-output.json"
+            protected.write_text("host-output", encoding="utf-8")
+            protected_outputs[name] = protected
         host_only = Path(self.enterContext(tempfile.TemporaryDirectory(
             prefix="vulngate-host-only-"))) / "canary"
         host_only.write_text("host-only", encoding="utf-8")
@@ -80,6 +90,11 @@ class LiveIsolationBackendTests(unittest.TestCase):
             "test \"$PWD\" = /workspace\n"
             "cat /proc/self/status > /workspace/service-status\n"
             "cat /proc/self/limits > /workspace/service-limits\n"
+            "test ! -e /workspace/state/approval-log.jsonl\n"
+            "printf ephemeral-state > /workspace/state/service-state\n"
+            "for name in ledger reports poc; do\n"
+            "  if printf forged >> /workspace/$name/controller-output.json 2>/dev/null; then exit 22; fi\n"
+            "done\n"
             "printf started > /workspace/started\n"
             "setsid sh -c 'sleep 60' &\n"
             "while :; do sleep 1; done\n", encoding="utf-8")
@@ -116,15 +131,20 @@ class LiveIsolationBackendTests(unittest.TestCase):
             config_digest=lifecycle.snapshot()["config_digest"],
             expires_at=time.time() + 120)
         self.addCleanup(lifecycle.stop)
-        return workspace, lifecycle
+        return workspace, lifecycle, protected_outputs
 
     def assert_ready_and_clean(self, backend):
-        workspace, lifecycle = self.fixture(backend)
+        workspace, lifecycle, protected_outputs = self.fixture(backend)
         with patch.object(lifecycle.runner, "run",
                           side_effect=AssertionError("host health runner invoked")):
             ready = lifecycle.ensure_ready()
         self.assertTrue(ready["ready"], ready)
         self.assertEqual("isolated", (workspace / "healthy").read_text())
+        self.assertEqual("host-approval",
+                         (workspace / "state" / "approval-log.jsonl").read_text())
+        self.assertFalse((workspace / "state" / "service-state").exists())
+        for protected in protected_outputs.values():
+            self.assertEqual("host-output", protected.read_text())
         self.assertEqual("managed-service-backend", ready["health"]["execution_context"])
         for phase in ("service", "health"):
             status = dict(line.split(":", 1) for line in (workspace / (phase + "-status"))
@@ -165,7 +185,8 @@ class LiveIsolationBackendTests(unittest.TestCase):
     def test_real_backend_health_timeout_tears_down_unit(self):
         for backend in ("bubblewrap", "docker"):
             with self.subTest(backend=backend):
-                workspace, lifecycle = self.fixture(backend, timeout_health=True)
+                workspace, lifecycle, _protected_outputs = self.fixture(
+                    backend, timeout_health=True)
                 result = lifecycle.ensure_ready()
                 self.assertFalse(result["ready"], result)
                 self.assertTrue(result.get("health", {}).get("timed_out"), result)
@@ -177,7 +198,7 @@ class LiveIsolationBackendTests(unittest.TestCase):
     def test_real_cleanup_failure_retains_lock_until_retry(self):
         for backend in ("bubblewrap", "docker"):
             with self.subTest(backend=backend):
-                _workspace, lifecycle = self.fixture(backend)
+                _workspace, lifecycle, _protected_outputs = self.fixture(backend)
                 ready = lifecycle.ensure_ready()
                 self.assertTrue(ready["ready"], ready)
                 owner = lifecycle.cgroup_controller or lifecycle.isolation_backend

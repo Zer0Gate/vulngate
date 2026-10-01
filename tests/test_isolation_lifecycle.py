@@ -61,6 +61,9 @@ class IsolationLifecycleTests(unittest.TestCase):
             start = backend.wrap_command(["sh", str(root / "service.sh")], root, root, {})
             self.assertIn("/workspace/service.sh", start)
             self.assertEqual("/workspace", start[start.index("-w") + 1])
+            self.assertIn("/workspace/state:rw,noexec,nosuid,nodev,size=536870912", start)
+            for name in ("ledger", "reports", "poc"):
+                self.assertIn("%s:/workspace/%s:ro" % ((root / name).resolve(), name), start)
             identity = "a" * 64
             with patch("agent.sandbox.isolation.subprocess.run", return_value=
                        subprocess.CompletedProcess([], 0, identity + "\n")):
@@ -153,6 +156,22 @@ class IsolationLifecycleTests(unittest.TestCase):
             self.assertNotIn("-t", health)
             self.assertEqual("/workspace/health.sh", health[-1])
             self.assertIn("BASH_ENV=/workspace/hook.sh", health)
+
+    def test_linux_workspace_hides_state_and_read_only_binds_controller_outputs(self):
+        with tempfile.TemporaryDirectory() as td, patch(
+                "agent.sandbox.isolation._version", return_value="test"):
+            root = Path(td)
+            backend = LinuxBubblewrapBackend("/usr/bin/bwrap")
+            try:
+                args = backend.wrap_command(["sh", "service.sh"], root, root, {})
+                self.assertTrue(any(args[index:index + 2] == ["--tmpfs", "/workspace/state"]
+                                    for index in range(len(args) - 1)))
+                for name in ("ledger", "reports", "poc"):
+                    self.assertTrue(any(args[index:index + 3] == [
+                        "--ro-bind", str((root / name).resolve()), "/workspace/" + name]
+                        for index in range(len(args) - 2)), name)
+            finally:
+                backend.close()
 
 
 if __name__ == "__main__":

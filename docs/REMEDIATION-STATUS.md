@@ -57,8 +57,9 @@
 
 - 具体目标仍需声明其 `jvm-protocol` JSON snapshot 和 allowlisted paths；未声明观测
   scope 的协议类别保持 `pending`，不能自动确认。
-- GitHub `main` 分支保护已启用并经 API readback 验证（2026-09-29）：要求
-  `test`/`security`、一个审批、CODEOWNERS 审核和管理员执行，禁止强推及删除。
-  矩阵结果使用固定名 `test` 汇总门禁；仍需最新 PR 的远端运行结果证明匹配。
+- GitHub `main` 分支保护已启用并经 API readback 验证（2026-10-01）：要求
+  `test`/`security`/`CodeQL`，审批数为 0（单人维护仓库不要求也不应要求自我批准），
+  不要求 CODEOWNERS 审核，管理员同样受保护，禁止强推及删除。PR #8 在提交
+  `71260b7` 上的上述检查均通过；该 PR 仍为 Draft，且后续本地隔离修复尚未跑远端 CI。
 - 重试预算、缓存身份、原始输出持久化、隔离生命周期及 observer 来源边界
   尚未完成后续验收；详情与依赖见 `REMEDIATION-PLAN.md`。

@@ -8,6 +8,9 @@
 backend 中，并消费绑定 `run_id + config_digest + expiry` 的一次性操作员授权。
 `allow_unconfined_start` 仅保留为兼容元数据，不能授权宿主启动；backend 或授权缺失时
 fail closed。本文后面的历史说明若仍提及 unconfined 语义，以本段和当前代码为准。
+服务仍可写普通 workspace 路径，但容器中的 `/workspace/state` 被有界临时文件系统覆盖，
+`ledger/`、`reports/` 和 `poc/` 只读挂载，从而隐藏宿主审批状态，并阻止服务改写控制器证据。
+这不防护同一宿主用户下的其他进程。
 
 目标特定的独立副作用通过 PoC 的 `effect_observers` 显式声明。matrix runner 支持
 有界的文件差分、进程/JVM 生命周期、target-specific `jvm-protocol` 状态、SQLite
