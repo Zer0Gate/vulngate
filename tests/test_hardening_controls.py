@@ -13,6 +13,7 @@ import tempfile
 import threading
 import time
 import unittest
+import uuid
 from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
@@ -184,8 +185,10 @@ class HardeningControlTests(unittest.TestCase):
             self.assertNotIn("admin", json.dumps(auth_after))
 
     def test_only_registered_independent_effects_reach_runtime_summary(self):
+        run_id = str(uuid.uuid4())
+        cell_id = "a" * 64
         valid = FilesystemDiffCollector().collect(
-            "run-1", "C1", "cell-1",
+            run_id, "C1", cell_id,
             {"status": "ok", "entries": {}},
             {"status": "ok", "entries": {
                 "marker": {"kind": "file", "size": 1, "digest": "x"},
@@ -193,15 +196,23 @@ class HardeningControlTests(unittest.TestCase):
         ).as_dict()
         forged = dict(valid)
         forged["collector_id"] = "poc.stdout"
-        summary = summarize_candidate([{
+        cell = {
             "candidate_id": "C1", "version": "1", "safe_mode": False,
-            "precondition": "none", "cell_id": "cell-1",
+            "precondition": "none", "cell_id": cell_id, "run_id": run_id,
             "returncode": 0, "timed_out": False,
             "observed_effects": [valid, forged], "observations": {},
-        }])
+        }
+        summary = summarize_candidate([cell])
         self.assertEqual(1, len(summary["independent_effect_evidence"]))
         self.assertEqual("filesystem-diff",
                          summary["independent_effect_evidence"][0]["kind"])
+
+        mismatched_run = dict(valid, run_id=str(uuid.uuid4()))
+        missing_identity = dict(valid, candidate_id="", cell_id="")
+        summary = summarize_candidate([dict(
+            cell, observed_effects=[mismatched_run, missing_identity])])
+        self.assertEqual([], summary["independent_effect_evidence"])
+        self.assertEqual("executed-no-effect", summary["execution_state"])
 
     def test_target_specific_effect_plan_is_wired_to_bounded_snapshots(self):
         with tempfile.TemporaryDirectory() as td:

@@ -4,6 +4,7 @@ import json
 import sys
 import tempfile
 import unittest
+import uuid
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -90,8 +91,10 @@ class HermeticPipelineTests(unittest.TestCase):
             self.assertEqual(expected, summary["execution_state"])
             self.assertFalse(g4_runtime(summary).passed)
 
+        run_id = str(uuid.uuid4())
+        cell_id = "b" * 64
         effect = FilesystemDiffCollector().collect(
-            "run-confirm", "confirmed", "cell-1",
+            run_id, "confirmed", cell_id,
             {"status": "ok", "entries": {}},
             {"status": "ok", "entries": {
                 "marker": {"kind": "file", "size": 1, "digest": "fixture"},
@@ -100,11 +103,21 @@ class HermeticPipelineTests(unittest.TestCase):
         confirmed = state({
             "candidate_id": "confirmed", "returncode": 0,
             "version": "fixture", "safe_mode": False,
-            "precondition": "none", "cell_id": "cell-1",
+            "precondition": "none", "cell_id": cell_id, "run_id": run_id,
             "observed_effects": [effect], "observations": {},
         })
         self.assertEqual("executed-with-effect", confirmed["execution_state"])
         self.assertTrue(g4_runtime(confirmed).passed)
+
+        mismatched_effect = dict(effect, run_id=str(uuid.uuid4()))
+        mismatched = state({
+            "candidate_id": "confirmed", "returncode": 0,
+            "version": "fixture", "safe_mode": False,
+            "precondition": "none", "cell_id": cell_id, "run_id": run_id,
+            "observed_effects": [mismatched_effect], "observations": {},
+        })
+        self.assertEqual("executed-no-effect", mismatched["execution_state"])
+        self.assertFalse(g4_runtime(mismatched).passed)
 
         self.assertTrue(g4_runtime({
             "exclusion_basis": {

@@ -957,6 +957,21 @@ def _trusted_observed_effects(cell: Dict[str, Any]) -> List[Dict[str, Any]]:
     digest shape agree with a collector registered by this runtime.  Invalid
     or hand-authored rows are ignored and therefore cannot promote a verdict.
     """
+    expected_run_id = cell.get("run_id")
+    expected_candidate_id = cell.get("candidate_id")
+    expected_cell_id = cell.get("cell_id")
+    if (not isinstance(expected_run_id, str)
+            or not isinstance(expected_candidate_id, str)
+            or not expected_candidate_id.strip()
+            or not isinstance(expected_cell_id, str)
+            or not re.fullmatch(r"[0-9a-f]{64}", expected_cell_id)):
+        return []
+    try:
+        if str(uuid.UUID(expected_run_id)) != expected_run_id:
+            return []
+    except (ValueError, AttributeError):
+        return []
+
     rows = cell.get("observed_effects")
     if not isinstance(rows, list):
         return []
@@ -971,14 +986,12 @@ def _trusted_observed_effects(cell: Dict[str, Any]) -> List[Dict[str, Any]]:
                 or raw.get("collector_id") != collector.collector_id
                 or raw.get("independent") is not True
                 or raw.get("status") not in {"observed", "absent", "pending"}
-                or not str(raw.get("run_id", "")).strip()
+                or raw.get("run_id") != expected_run_id
+                or raw.get("candidate_id") != expected_candidate_id
+                or raw.get("cell_id") != expected_cell_id
                 or not re.fullmatch(r"[0-9a-f]{64}",
                                     str(raw.get("value_digest", "")))
                 or not isinstance(raw.get("details", {}), dict)):
-            continue
-        if raw.get("candidate_id", "") not in ("", cell.get("candidate_id", "")):
-            continue
-        if raw.get("cell_id", "") not in ("", cell.get("cell_id", "")):
             continue
         accepted.append({
             "schema_version": raw["schema_version"],

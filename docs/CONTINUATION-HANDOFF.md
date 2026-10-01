@@ -8,6 +8,16 @@ main 继续要求 PR、管理员强制执行、严格必需检查且禁止强推
 GitHub 远端已按该策略应用并由仓库脚本读回确认。
 PR #8 当前评审未完成，不据此条规则把 PR 视为已审或可合并。
 
+## 2026-10-01 增量：R06 observer effect 身份精确绑定
+
+此前内存反例证明 effect 的 run ID 与 cell 不一致仍可进入独立效果摘要并通过 G4。
+现在 `_trusted_observed_effects` 要求 cell 的 canonical UUID、candidate ID 和 SHA-256
+cell ID 均有效，且 effect 的三项身份逐字节匹配；缺失或错配记录被拒绝。效果 schema
+同步要求这些字段，S4 evidence policy 升至 v18，旧版无完整身份的效果不再作可信依据。
+新增回归覆盖有效效果、run ID 错配、缺失身份以及 G4 阻断；实现提交后的远端 CI 尚待验收。
+这只关闭单条 observer effect 的身份绑定，不关闭同轮多 PoC/Java-shell/修复重试间的
+active attempt/spec 筛选、完整 runtime 闭包、镜像实际 launch 固定或 validate-to-use 冻结。
+
 ## 2026-10-01 增量：R06 当前父身份与精确产物字节（源码远端已验收）
 
 ### 最新验收状态（优先于下方历史记录）
