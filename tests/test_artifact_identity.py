@@ -161,6 +161,31 @@ class ArtifactIdentityTests(unittest.TestCase):
         self.assertEqual(cells, converge_s4_cells(self.root, "fixture", 1, "A1")[0])
         self.assertEqual([], converge_s4_cells(self.root, "fixture", 1, "A2")[0])
 
+    def test_convergence_replaces_superseded_spec_attempt_but_keeps_sibling(self):
+        spec_id = "s4spec-" + "a" * 64
+        sibling_spec_id = "s4spec-" + "b" * 64
+        old = {
+            "candidate_id": "A1", "version": "1", "returncode": 0,
+            "s4_spec_id": spec_id, "s4_attempt_id": "00000000-0000-0000-0000-000000000001",
+            "s4_attempt_started_ns": 1,
+        }
+        sibling = {
+            "candidate_id": "A1", "version": "1", "returncode": 0,
+            "s4_spec_id": sibling_spec_id,
+            "s4_attempt_id": "00000000-0000-0000-0000-000000000002",
+            "s4_attempt_started_ns": 2,
+        }
+        self.store.write_artifact(
+            "S4", "host-fallback.json", {"results": {"A1": [old, sibling]}})
+        current = {
+            "candidate_id": "A1", "version": "1", "returncode": 0,
+            "s4_spec_id": spec_id, "s4_attempt_id": "00000000-0000-0000-0000-000000000003",
+            "s4_attempt_started_ns": 3,
+        }
+        merged, _ = converge_s4_cells(
+            self.root, "fixture", 1, "A1", [current])
+        self.assertEqual([current, sibling], merged)
+
     def test_report_and_ledger_resume_revalidate_publication_bytes(self):
         report = EvidenceStore(self.root).write_text("reports/fixture/round-01/finding.md", "pending")
         self.store.save_stage("S7", {"finding_docs": ["finding.md"]})

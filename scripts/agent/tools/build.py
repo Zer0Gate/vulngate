@@ -550,6 +550,52 @@ class POCSpec:
     effect_observers: Dict[str, Any] = field(default_factory=dict)
 
 
+def _s4_spec_identity(spec: Any, lane: str) -> str:
+    if lane == "java":
+        selector = {
+            "class_name": str(getattr(spec, "class_name", "")),
+            "src": str(getattr(spec, "src", "")),
+            "extra_srcs": sorted(str(item) for item in
+                                  getattr(spec, "extra_srcs", [])),
+        }
+    elif lane == "shell":
+        selector = {"script": str(getattr(spec, "script", ""))}
+    else:
+        raise ValueError("unknown S4 lane")
+    identity = {"candidate_id": str(getattr(spec, "candidate_id", "")),
+                "lane": lane, "selector": selector}
+    digest = hashlib.sha256(json.dumps(
+        identity, sort_keys=True, separators=(",", ":"),
+        ensure_ascii=False).encode("utf-8")).hexdigest()
+    return "s4spec-" + digest
+
+
+def _bind_s4_attempt(cells: List[Dict[str, Any]], spec_id: str,
+                     attempt_id: str, started_ns: int) -> None:
+    for cell in cells:
+        if isinstance(cell, dict):
+            cell["s4_spec_id"] = spec_id
+            cell["s4_attempt_id"] = attempt_id
+            cell["s4_attempt_started_ns"] = started_ns
+
+
+def _s4_attempt_identity(cell: Dict[str, Any]) -> Optional[tuple]:
+    spec_id = cell.get("s4_spec_id")
+    attempt_id = cell.get("s4_attempt_id")
+    started_ns = cell.get("s4_attempt_started_ns")
+    if (not isinstance(spec_id, str)
+            or not re.fullmatch(r"s4spec-[0-9a-f]{64}", spec_id)
+            or not isinstance(attempt_id, str)
+            or type(started_ns) is not int or started_ns <= 0):
+        return None
+    try:
+        if str(uuid.UUID(attempt_id)) != attempt_id:
+            return None
+    except (ValueError, AttributeError):
+        return None
+    return spec_id, attempt_id, started_ns
+
+
 ENV_ERROR_PATTERN = re.compile(
     r"(NoClassDefFoundError|ClassNotFoundException|NoSuchMethodError|"
     r"UnsupportedClassVersionError|LinkageError|ExceptionInInitializerError|"
@@ -1366,6 +1412,9 @@ class JavaMatrixRunner:
         all_results: Dict[str, List[Dict]] = {}
         for spec in specs:
             _safe_component(spec.candidate_id, "candidate_id")
+            spec_id = _s4_spec_identity(spec, "java")
+            attempt_id = str(uuid.uuid4())
+            attempt_started_ns = time.time_ns()
             results = []
             budget_id = _budget_key(spec)
             self.execution_budget.deadline_for(budget_id)
@@ -1375,6 +1424,8 @@ class JavaMatrixRunner:
                 results = [self._policy_cell(
                     spec, cell, "needs-network-isolation", reason, sandbox_policy)
                     for cell in spec.cells]
+                _bind_s4_attempt(results, spec_id, attempt_id,
+                                 attempt_started_ns)
                 all_results.setdefault(spec.candidate_id, []).extend(results)
                 continue
             if self._requires_network_observer(spec):
@@ -1386,6 +1437,8 @@ class JavaMatrixRunner:
                     for cell in spec.cells]
                 for item in results:
                     item["observation_gaps"] = ["java-network-observer-unavailable"]
+                _bind_s4_attempt(results, spec_id, attempt_id,
+                                 attempt_started_ns)
                 all_results.setdefault(spec.candidate_id, []).extend(results)
                 continue
             # Compile separately for different requested runtimes.  This keeps
@@ -1469,6 +1522,7 @@ class JavaMatrixRunner:
                         continue
                     results.append(self.run_cell(
                         spec, cell, jars, runtime, timeout=cell_timeout))
+            _bind_s4_attempt(results, spec_id, attempt_id, attempt_started_ns)
             all_results.setdefault(spec.candidate_id, []).extend(results)
         for candidate_id, cells in all_results.items():
             self._write_cells(candidate_id, cells)
@@ -1555,6 +1609,9 @@ class ShellMatrixRunner:
         all_results: Dict[str, List[Dict]] = {}
         for spec in specs:
             _safe_component(spec.candidate_id, "candidate_id")
+            spec_id = _s4_spec_identity(spec, "shell")
+            attempt_id = str(uuid.uuid4())
+            attempt_started_ns = time.time_ns()
             budget_id = _budget_key(spec)
             self.execution_budget.deadline_for(budget_id)
             results = []
@@ -1568,6 +1625,7 @@ class ShellMatrixRunner:
                         "shell", budget_id))
                     continue
                 results.append(self.run_cell(spec, cell, timeout=timeout))
+            _bind_s4_attempt(results, spec_id, attempt_id, attempt_started_ns)
             all_results.setdefault(spec.candidate_id, []).extend(results)
         for candidate_id, cells in all_results.items():
             self._write_cells(candidate_id, cells)
@@ -2367,6 +2425,26 @@ def converge_s4_cells(workspace: Path, target: str, round_no: int,
             if cells:
                 candidates.append(("fallback:%s" % path.name, cells))
 
+    latest_attempts: Dict[str, tuple] = {}
+    active_attempts: Dict[str, str] = {}
+    for source, cells in candidates:
+        for cell in cells:
+            if not isinstance(cell, dict):
+                continue
+            identity = _s4_attempt_identity(cell)
+            if identity is None:
+                continue
+            spec_id, attempt_id, started_ns = identity
+            if source == "runner":
+                active_attempts[spec_id] = attempt_id
+            previous = latest_attempts.get(spec_id)
+            if previous is None or started_ns > previous[1]:
+                latest_attempts[spec_id] = (attempt_id, started_ns)
+    latest_attempts.update({
+        spec_id: (attempt_id, latest_attempts.get(spec_id, ("", 0))[1])
+        for spec_id, attempt_id in active_attempts.items()
+    })
+
     merged: List[Dict] = []
     seen = set()
     sources = []
@@ -2375,6 +2453,17 @@ def converge_s4_cells(workspace: Path, target: str, round_no: int,
             continue
         sources.append(source)
         for cell in cells:
+            identity = _s4_attempt_identity(cell)
+            if identity is None:
+                # Once current code emits attempt identities, legacy cells in
+                # sidecar files cannot be mixed into that active result set.
+                if active_attempts and source != "runner":
+                    continue
+            else:
+                spec_id, attempt_id, _started_ns = identity
+                selected = latest_attempts.get(spec_id)
+                if selected and attempt_id != selected[0]:
+                    continue
             # Diagnostics differ after persistence. Compare the same safe
             # representation, retaining the first (live) cell for repair.
             key = json.dumps(public_document(cell), sort_keys=True, ensure_ascii=False)
