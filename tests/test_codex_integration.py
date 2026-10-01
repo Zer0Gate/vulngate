@@ -36,6 +36,10 @@ class PipelineSelectionTests(unittest.TestCase):
             cfg = TargetConfig('fixture', '2026-09-16', candidates=[
                 {'candidate_id': 'deferred', 'surface': 'exec'}])
             ctx = StageContext(Path(td), 'fixture', 1, cfg, offline=True)
+            from agent.orchestrator.run_identity import RunManifest, bind_round
+            bind_round(ctx.store, RunManifest.collect(
+                Path(td), cfg, 1,
+                execution_options={'driver': 'pipeline', 'offline': True}))
             ctx.store.write_artifact('S1', 'coverage-summary.json', {
                 'status': 'complete',
                 'scope': {'status': 'matched', 'valid': True},
@@ -101,6 +105,51 @@ class NativeLauncherTests(unittest.TestCase):
 
 
 class CodexInstallerTests(unittest.TestCase):
+    def test_enable_failure_restores_previous_tree(self):
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            dest = base / 'plugins/vulngate'
+            dest.mkdir(parents=True)
+            (dest / 'previous.txt').write_text('original generation')
+            codex = base / 'codex'
+            codex.write_text('#!/bin/sh\nexit 19\n')
+            codex.chmod(0o700)
+            env = dict(os.environ, PLUGIN_HOME=str(base / 'plugins'),
+                       VULNGATE_MARKETPLACE=str(base / 'market/marketplace.json'),
+                       CODEX_BIN=str(codex))
+            result = subprocess.run(['bash', str(ROOT / 'install.sh')], env=env,
+                                    capture_output=True, text=True)
+            self.assertEqual(19, result.returncode, result.stdout + result.stderr)
+            self.assertEqual('original generation', (dest / 'previous.txt').read_text())
+            self.assertFalse((dest / 'scripts').exists())
+
+    def test_installer_does_not_alias_deleted_old_cache_to_new_content(self):
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            cache = base / 'codex-home/plugins/cache/personal/vulngate'
+            old = cache / 'old-version'
+            old.mkdir(parents=True)
+            (old / 'identity').write_text('old')
+            codex = base / 'codex'
+            codex.write_text(
+                '#!' + sys.executable + '\n'
+                'import json, os, pathlib, shutil\n'
+                'root = pathlib.Path(' + repr(str(cache)) + ')\n'
+                'manifest = pathlib.Path(os.environ["PLUGIN_HOME"]) / "vulngate/.codex-plugin/plugin.json"\n'
+                'version = json.loads(manifest.read_text())["version"]\n'
+                'shutil.rmtree(root / "old-version")\n'
+                'shutil.copytree(manifest.parent.parent, root / version)\n'
+                'print("Installed plugin root: " + str(root / version))\n')
+            codex.chmod(0o700)
+            env = dict(os.environ, PLUGIN_HOME=str(base / 'plugins'),
+                       VULNGATE_MARKETPLACE=str(base / 'market/marketplace.json'),
+                       CODEX_HOME=str(base / 'codex-home'), CODEX_BIN=str(codex))
+            result = subprocess.run(['bash', str(ROOT / 'install.sh')], env=env,
+                                    capture_output=True, text=True)
+            self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+            self.assertFalse(old.exists())
+            self.assertFalse(old.is_symlink())
+
     def test_install_and_update_ship_only_plugin_payload(self):
         with tempfile.TemporaryDirectory() as td:
             base = Path(td)
@@ -119,10 +168,25 @@ class CodexInstallerTests(unittest.TestCase):
             env = dict(os.environ, PLUGIN_HOME=str(base / 'plugins'),
                        VULNGATE_MARKETPLACE=str(marketplace))
             dest = base / 'plugins/vulngate'
-            for _ in range(2):
-                result = subprocess.run(['bash', str(source / 'install.sh'), '--no-enable'],
-                                        env=env, capture_output=True, text=True)
-                self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+            obsolete = source / 'scripts/old-dangerous-helper.sh'
+            obsolete.write_text('must disappear on upgrade', encoding='utf-8')
+            result = subprocess.run(['bash', str(source / 'install.sh'), '--no-enable'],
+                                    env=env, capture_output=True, text=True)
+            self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+            stale = dest / 'scripts' / 'old-dangerous-helper.sh'
+            self.assertTrue(stale.exists())
+            old_generation = dest.resolve()
+            obsolete.unlink()
+            source_manifest = source / '.codex-plugin/plugin.json'
+            upgraded = json.loads(source_manifest.read_text())
+            upgraded['version'] = '1.3.0+codex.installer-test-upgrade'
+            source_manifest.write_text(json.dumps(upgraded))
+            result = subprocess.run(['bash', str(source / 'install.sh'), '--no-enable'],
+                                    env=env, capture_output=True, text=True)
+            self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+            self.assertFalse(stale.exists())
+            self.assertTrue((old_generation / 'scripts/old-dangerous-helper.sh').exists())
+            self.assertEqual(dest.resolve(), (marketplace.parent / 'plugins/vulngate').resolve())
             data = json.loads(marketplace.read_text())
             self.assertEqual('Existing', data['interface']['displayName'])
             self.assertEqual(other, data['plugins'][0])
@@ -131,7 +195,8 @@ class CodexInstallerTests(unittest.TestCase):
             self.assertEqual('vulngate', manifest['name'])
             self.assertIn('+codex.', manifest['version'])
             for name in ('macos/bin/vg-run.py', 'scripts/agent/analysis/coverage.py',
-                         'skills/vulngate-audit/SKILL.md'):
+                         'skills/vulngate-audit/SKILL.md',
+                         'schemas/observed-effect.json', 'pyproject.toml'):
                 self.assertTrue((dest / name).is_file(), name)
             for name in ('state', 'ledger', 'reports', 'poc', '.env', '.gitignore', '.github',
                          '.vulngate-macos-backup', '.foreign-plugin', '.foreign-agent-state'):

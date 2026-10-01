@@ -23,6 +23,26 @@ from agent.tools.surface_variants import build_surface_variant_plan  # noqa: E40
 
 
 class S4RuntimeLabTests(unittest.TestCase):
+    def test_s4_records_incomplete_service_teardown(self):
+        cfg = TargetConfig(name="cleanup-gap", discovery_date="2026-09-21",
+                           candidates=[{"candidate_id": "C1", "surface": "fixture"}])
+        with tempfile.TemporaryDirectory() as td, patch(
+                "agent.orchestrator.stages.s4.run_s4_runtime_lab",
+                return_value={"schema_version": "runtime-lab-v1",
+                              "scope": "ordinary-s4", "status": "complete",
+                              "fixtures": [], "claim_status": "not-a-finding"}), patch(
+                "agent.tools.service_lifecycle.ServiceLifecycle.stop",
+                return_value={"status": "cleanup-incomplete", "stopped": False}):
+            result = run_s4(StageContext(Path(td), "cleanup-gap", 1, cfg,
+                                         offline=True))
+            artifact = json.loads((Path(td) / "state" / "cleanup-gap" /
+                                   "round-01" / "S4" /
+                                   "runtime-lab.json").read_text(encoding="utf-8"))
+        self.assertEqual("cleanup-incomplete", result["runtime_lab"]["status"])
+        self.assertEqual("cleanup-incomplete", artifact["status"])
+        self.assertFalse(artifact["service_cleanup"]["stopped"])
+        self.assertEqual("run-failed", result["summaries"]["C1"]["execution_state"])
+
     def test_fixture_is_stable_and_does_not_persist_raw_arguments(self):
         cell = MatrixCell(
             version="1.1", safe_mode=False,

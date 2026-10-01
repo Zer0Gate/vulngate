@@ -205,6 +205,10 @@ class PipelineResumeRegressionTests(unittest.TestCase):
         candidate = {"candidate_id": "scheduled", "surface": "parser input"}
         config = TargetConfig("fixture", "2026-09-25", candidates=[])
         ctx = StageContext(workspace, "fixture", 1, config, offline=True)
+        from agent.orchestrator.run_identity import RunManifest, bind_round
+        bind_round(ctx.store, RunManifest.collect(
+            workspace, config, 1,
+            execution_options={"driver": "pipeline", "offline": True}))
         ctx.store.write_artifact("S1", "coverage-summary.json", {
             "status": "complete",
             "scope": {"status": "matched", "valid": True},

@@ -13,8 +13,11 @@ Hard gates are enforced between stages:
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import sys
+from ..memory.artifact_identity import isolated_identity
+from .run_identity import RunIdentityError
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -27,6 +30,7 @@ from ..tools.public_scan import NOVELTY_QUERY_POLICY_VERSION
 from .stages import (StageContext, run_s1, run_s2, run_s3, run_s4, run_s5,
                      run_s6, run_s7, run_s8, _coverage_scope_incomplete,
                      _derive_conclusion)
+from .work_budget import WorkBudget
 
 
 WORKSPACE = Path(__file__).resolve().parents[2]
@@ -79,7 +83,26 @@ def _conclusions(ctx: StageContext, summaries: Dict[str, Any]) -> Dict[str, str]
     return out
 
 
+@isolated_identity
 def run_round(ctx: StageContext, force: bool = False, only: Optional[str] = None) -> None:
+    # Scheduled/enriched candidates are derived round state, not a rewrite of
+    # the operator's config identity. Keep the original config for later calls.
+    operator_config = ctx.config
+    ctx._run_identity_refused = False
+    ctx.store.manifest_sha256 = None
+    ctx.config = copy.deepcopy(operator_config)
+    try:
+        _run_round(ctx, force, only)
+    except RunIdentityError as exc:
+        ctx._run_identity_refused = True
+        ctx.store.write_artifact("S0", "run-identity-status.json", {
+            "status": "invalid-run-identity", "error": str(exc), "claim_status": "not-a-finding"})
+        print("[pipeline] refusing artifact identity: %s" % exc)
+    finally:
+        ctx.config = operator_config
+
+
+def _run_round(ctx: StageContext, force: bool = False, only: Optional[str] = None) -> None:
     stages = list(STAGES)
     if only:
         if only not in STAGES:
@@ -108,6 +131,38 @@ def run_round(ctx: StageContext, force: bool = False, only: Optional[str] = None
         print("[pipeline] refusing round: %s" % exc)
         return
     ctx._round_budget_record = round_budget
+    remaining_seconds = max(
+        0.001, float(round_budget_snapshot(round_budget).get(
+            "remaining_seconds", budget_seconds)))
+    configured_slots = getattr(ctx.config, "max_candidates", 8) or 8
+    try:
+        candidate_slots = max(1, int(configured_slots))
+    except (TypeError, ValueError):
+        candidate_slots = 8
+    ctx.work_budget = WorkBudget(
+        name="audit-round", wall_seconds=remaining_seconds,
+        scan_files=500_000, scan_bytes=4 * 1024 * 1024 * 1024,
+        process_slots=128, candidate_slots=candidate_slots,
+        llm_calls=(getattr(ctx.llm, "max_calls", None)
+                   if ctx.llm is not None else None),
+        llm_tokens=getattr(ctx.llm, "max_tokens_total", None))
+    if ctx.llm is not None and hasattr(ctx.llm, "set_work_budget"):
+        ctx.llm.set_work_budget(ctx.work_budget)
+    if not round_budget_snapshot(round_budget)["expired"]:
+        from .run_identity import RunManifest, bind_round
+        from .work_budget import WorkBudgetExceeded
+        try:
+            manifest = RunManifest.collect(
+                ctx.workspace, ctx.config, ctx.round_no, budget=ctx.work_budget,
+                execution_options={"driver": "pipeline", "offline": ctx.offline})
+            bind_round(ctx.store, manifest)
+        except (OSError, TypeError, ValueError, WorkBudgetExceeded) as exc:
+            ctx._run_identity_refused = True
+            ctx.store.write_artifact("S0", "run-identity-status.json", {
+                "status": "invalid-run-identity", "error": str(exc),
+                "claim_status": "not-a-finding"})
+            print("[pipeline] refusing run identity: %s" % exc)
+            return
     try:
         source_root = workspace_target_root(ctx.workspace, ctx.target)
         register_active_audit(
@@ -455,6 +510,8 @@ def _ledger_rows(ctx: StageContext, summaries: Dict[str, Any],
 
 
 def _evidence_lines(summary: Dict[str, Any]) -> list:
+    from ..memory.evidence_store import public_document
+    summary = public_document(summary)
     lines = []
     if summary.get("harness_error"):
         lines.append("HARNESS_ERROR=" + str(summary["harness_error"]))
@@ -551,7 +608,7 @@ def main(argv: Optional[list] = None) -> int:
                         workspace, args.target, args.round, root=source_root)
             except (OSError, TypeError, ValueError) as exc:
                 print("[pipeline] could not release active-audit guard: %s" % exc)
-    return 0
+    return 2 if getattr(ctx, "_run_identity_refused", False) else 0
 
 
 if __name__ == "__main__":

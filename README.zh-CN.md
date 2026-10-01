@@ -172,7 +172,7 @@ bash macos/run-audit.sh /Applications/Target.app /path/to/native-audit
 ### 前置要求
 
 - Codex（CLI 或桌面客户端），支持插件的版本
-- Python 3.8+
+- Python 3.10+
 - JVM 目标需要 JDK 8+（推荐 17/21）；原生 macOS 目标需要 Command Line Tools
 - `rg`（ripgrep），用于源码测绘
 
@@ -184,13 +184,17 @@ cd vulngate
 ./install.sh
 ```
 
-`install.sh` 会把插件复制到 `~/plugins/vulngate`、注册个人 marketplace，并在 Codex 中启用（`codex plugin add vulngate@personal`）。脚本会自动从 `$PATH` 和支持的桌面应用路径中寻找 `codex`。
+`install.sh` 会校验并保存按内容摘要标识的插件版本，通过 `~/plugins/vulngate`
+指向当前版本、注册个人 marketplace，并在 Codex 中启用。脚本会从 `$PATH`
+和支持的桌面应用路径中寻找 `codex`。仅安装、不启用时使用 `--no-enable`。
 
 > **安装后必须新建线程。** 插件技能在线程启动时加载。
 
-已有安装需要更新时，请重新执行 `./install.sh`。安装脚本会为旧版缓存路径
-保留兼容别名，避免更新期间正在运行的审计任务丢失 `SKILL.md`。审计任务运行
-时不要直接执行单独的 `codex plugin add vulngate@personal`。
+更新前先结束正在运行的审计，再执行 `./install.sh`。安装器保留旧源码版本，
+但 Codex 自行管理技能缓存；绝不把旧版本路径映射到新内容。旧线程的缓存若
+被移除，必须停止，启用后新建线程。安装器保留源码 manifest 版本，同一版本
+对应不同内容时拒绝安装；开发更新应先更新 cachebuster。
+详见[安装事务与恢复说明](docs/INSTALLATION.md)。
 
 ### 手动安装
 

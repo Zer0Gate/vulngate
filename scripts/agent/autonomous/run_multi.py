@@ -116,7 +116,6 @@ def _summarize(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             confirmed += int(m.get("确认数", 0))
             excluded += int(m.get("排除数", 0))
         u = r["llm_usage"]
-        real = u.get("prompt_tokens", 0) * 0.14 / 1e6 + u.get("completion_tokens", 0) * 0.28 / 1e6
         out.append({
             "target": target,
             "rounds": r["rounds_done"],
@@ -125,8 +124,8 @@ def _summarize(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             "excluded": excluded,
             "llm_calls": u.get("calls", 0),
             "tokens": u.get("total_tokens", 0),
-            "estimated_usd": round(u.get("estimated_usd", 0.0), 4),
-            "real_usd_flash": round(real, 4),
+            "estimated_usd": u.get("estimated_usd"),
+            "cost_status": u.get("cost_status", "unknown"),
             "elapsed_s": r["elapsed_s"],
         })
     return out
@@ -136,21 +135,30 @@ def _render_md(stats: List[Dict[str, Any]]) -> str:
     lines = [
         "# 多目标并行汇总（2.2 · %s）" % datetime.now().strftime("%Y-%m-%d %H:%M"),
         "",
-        "| 目标 | 轮次 | 候选 | 确认 | 排除 | LLM 调用 | token | 估算$ | 真实$(flash) | 耗时s |",
-        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+        "| 目标 | 轮次 | 候选 | 确认 | 排除 | LLM 调用 | token | 估算$ | 耗时s |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
-    tc = tx = tk = te = tr = 0
+    tc = tx = tk = te = 0
+    cost_known = True
     for s in stats:
-        lines.append("| %s | %d | %d | %d | %d | %d | %d | %.4f | %.4f | %.1f |" % (
+        estimate = s.get("estimated_usd")
+        cost = "unknown" if estimate is None else "%.4f" % estimate
+        lines.append("| %s | %d | %d | %d | %d | %d | %d | %s | %.1f |" % (
             s["target"], s["rounds"], s["candidates"], s["confirmed"], s["excluded"],
-            s["llm_calls"], s["tokens"], s["estimated_usd"], s["real_usd_flash"],
+            s["llm_calls"], s["tokens"], cost,
             s["elapsed_s"]))
-        tc += s["candidates"]; tx += s["excluded"]; tk += s["tokens"]
-        te += s["estimated_usd"]; tr += s["real_usd_flash"]
-    lines.append("| **合计** | **%d** | **%d** | **%d** | **%d** | **%d** | **%d** | **%.4f** | **%.4f** | — |" % (
+        tc += s["candidates"]
+        tx += s["excluded"]
+        tk += s["tokens"]
+        if estimate is None:
+            cost_known = False
+        else:
+            te += estimate
+    lines.append("| **合计** | **%d** | **%d** | **%d** | **%d** | **%d** | **%d** | **%s** | — |" % (
         sum(s["rounds"] for s in stats), tc,
         sum(s["confirmed"] for s in stats), tx,
-        sum(s["llm_calls"] for s in stats), tk, te, tr))
+        sum(s["llm_calls"] for s in stats), tk,
+        "%.4f" % te if cost_known else "unknown"))
     lines += ["", "> 注：确认数来自各目标 S8 ledger（自治判定，未经人工复核）；",
               "> 新库结论须对照 reports/<target>/round-*/人工对照*.md。"]
     return "\n".join(lines)

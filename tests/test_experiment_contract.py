@@ -2,6 +2,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -25,6 +26,22 @@ from agent.tools.cvss import check_impact_consistency  # noqa: E402
 
 
 class ExperimentContractTests(unittest.TestCase):
+    def test_residual_summary_does_not_treat_free_text_as_observed_effect(self):
+        # Exercise the summary branch independently of collector validation.
+        # Production still accepts residual data only through trusted collectors.
+        observation = {
+            "RESIDUAL_ID": "rr-01234567890123456789",
+            "RESIDUAL_STATUS": "pending",
+            "EVIDENCE": "an arbitrary claim is not an observed side effect",
+        }
+        cell = {"version": "local", "safe_mode": False, "precondition": "none",
+                "returncode": 0}
+        with patch("agent.tools.build._trusted_observations", return_value=observation):
+            summary = summarize_candidate([cell])
+        self.assertEqual(1, len(summary["residual_falsifiers"]))
+        self.assertFalse(summary["residual_falsifiers"][0]["effect_observed"])
+        self.assertEqual([], summary["effect_evidence"])
+
     def test_declaration_is_bounded_and_rejects_step_fragments(self):
         steps, workers, probe, warnings = normalize_experiment(
             ["seed", "bad step", "mutate", "$(touch /tmp/nope)"] +

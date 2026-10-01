@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vulngate.invalid/schemas/run-artifact-binding.json",
+  "title": "Exact-byte artifact binding; not an execution attestation",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "manifest_sha256", "path", "sha256", "size", "claim_status"],
+  "properties": {
+    "schema_version": {"const": "run-artifact-binding-v1"},
+    "manifest_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "path": {"type": "string", "minLength": 1},
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "size": {"type": "integer", "minimum": 0},
+    "claim_status": {"const": "not-a-finding"}
+  }
+}

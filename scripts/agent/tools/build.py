@@ -19,13 +19,19 @@ import tempfile
 import threading
 import time
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlsplit
 
 from ..sandbox.approval import ApprovalGate
+from ..memory.evidence_store import EvidenceStore, public_document
+from ..memory.raw_vault import RawVault
 from ..sandbox.http_observer import LoopbackHTTPObserver, OBSERVER_VERSION
+from ..sandbox.effects import (EFFECT_SCHEMA_VERSION, HTTPSemanticCollector,
+                                collector_for)
+from ..orchestrator.work_budget import WorkBudget, WorkBudgetExceeded
+from ..orchestrator.security_types import StopReason
 from ..sandbox.network_sandbox import (SEATBELT_DENY_ALL_POLICY,
                                        SEATBELT_POC_FILESYSTEM_POLICY,
                                        SEATBELT_PROXY_POLICY,
@@ -69,7 +75,8 @@ class S4ExecutionBudget:
     """Shared wall-clock budgets for one S4 round and each candidate."""
 
     def __init__(self, round_timeout_seconds: int = 5400,
-                 candidate_timeout_seconds: int = 900):
+                 candidate_timeout_seconds: int = 900,
+                 work_budget: Optional[WorkBudget] = None):
         self.requested_round_timeout_seconds = max(1, int(round_timeout_seconds))
         self.requested_candidate_timeout_seconds = max(
             1, int(candidate_timeout_seconds))
@@ -79,9 +86,17 @@ class S4ExecutionBudget:
         self.candidate_timeout_seconds = min(
             self.requested_candidate_timeout_seconds,
             MAX_S4_CANDIDATE_TIMEOUT_SECONDS)
+        self.work_budget = work_budget or WorkBudget(
+            name="s4-round", wall_seconds=self.round_timeout_seconds)
         self.started_at = time.monotonic()
-        self.round_deadline = self.started_at + self.round_timeout_seconds
+        work_remaining = self.work_budget.remaining("wall_seconds")
+        self.round_deadline = self.started_at + min(
+            self.round_timeout_seconds,
+            work_remaining if work_remaining is not None else
+            float(self.round_timeout_seconds))
         self._candidate_deadlines: Dict[str, float] = {}
+        self._candidate_budgets: Dict[str, WorkBudget] = {}
+        self._candidate_lock = threading.Lock()
         self._abort_event = threading.Event()
         self.abort_reason = ""
 
@@ -97,10 +112,22 @@ class S4ExecutionBudget:
 
     def deadline_for(self, candidate_id: str) -> float:
         key = str(candidate_id)
-        if key not in self._candidate_deadlines:
-            self._candidate_deadlines[key] = min(
-                self.round_deadline,
-                time.monotonic() + self.candidate_timeout_seconds)
+        with self._candidate_lock:
+            if key not in self._candidate_deadlines:
+                try:
+                    child = self.work_budget.child(
+                        "s4-candidate:%s" % key,
+                        wall_seconds=self.candidate_timeout_seconds,
+                        candidate_slots=1)
+                    child.acquire_candidate()
+                    self._candidate_budgets[key] = child
+                    child_remaining = child.remaining("wall_seconds")
+                except WorkBudgetExceeded as exc:
+                    self.abort("work-budget-candidate-slots-exhausted:%s" % str(exc)[:100])
+                    child_remaining = 0.0
+                self._candidate_deadlines[key] = min(
+                    self.round_deadline,
+                    time.monotonic() + (child_remaining or 0.0))
         return self._candidate_deadlines[key]
 
     def remaining(self, candidate_id: str) -> float:
@@ -119,10 +146,11 @@ class S4ExecutionBudget:
 
     def stop_reason(self, candidate_id: str) -> str:
         if self._abort_event.is_set():
-            return self.abort_reason or "s4-aborted"
+            return self.abort_reason or StopReason.S4_ABORTED.value
         if self.round_remaining() < 1.0:
-            return "s4-round-timebox-exhausted"
-        return "candidate-timebox-exhausted:%s" % candidate_id
+            return StopReason.ROUND_TIMEBOX_EXHAUSTED.value
+        return "%s:%s" % (StopReason.CANDIDATE_TIMEBOX_EXHAUSTED.value,
+                           candidate_id)
 
     def snapshot(self) -> Dict[str, Any]:
         now = time.monotonic()
@@ -145,6 +173,7 @@ class S4ExecutionBudget:
             "abort_reason": self.abort_reason,
             "candidates_started": len(self._candidate_deadlines),
             "candidate_timeboxes_exhausted": expired,
+            "work_budget": self.work_budget.snapshot(),
         }
 
 
@@ -208,6 +237,97 @@ def _contained_path(root: Path, relative: Any, label: str,
     if not resolved.is_relative_to(resolved_root):
         raise ValueError("%s escapes its authorized root" % label)
     return resolved
+
+
+def _effect_observer_plan(spec: Any) -> Dict[str, Dict[str, Any]]:
+    """Normalize the explicitly declared target-side observer plan.
+
+    Effect collection is opt-in.  A target configuration can declare a
+    bounded filesystem, process, fixture DB, JVM lifecycle/protocol, or
+    authorization scope, but
+    the declaration itself is never evidence and unknown kinds are ignored.
+    """
+    raw = getattr(spec, "effect_observers", {})
+    if not isinstance(raw, dict):
+        return {}
+    plan: Dict[str, Dict[str, Any]] = {}
+    for kind, value in raw.items():
+        collector = collector_for(str(kind).strip().lower())
+        if collector is None or str(kind).strip().lower() == "http-semantic":
+            continue
+        config = value if isinstance(value, dict) else {}
+        plan[str(kind).strip().lower()] = dict(config)
+    return plan
+
+
+def _prepare_effect_observers(workspace: Path, spec: Any) -> List[Dict[str, Any]]:
+    """Take bounded before-snapshots for a target-specific effect plan."""
+    prepared: List[Dict[str, Any]] = []
+    for kind, config in _effect_observer_plan(spec).items():
+        collector = collector_for(kind)
+        if collector is None:
+            continue
+        try:
+            if kind == "filesystem-diff":
+                before = collector.snapshot(_contained_path(
+                    workspace, config.get("root", "."),
+                    "filesystem effect root"))
+            elif kind == "fixture-db":
+                path = _contained_path(workspace, config.get("path", ""),
+                                       "fixture DB path")
+                before = collector.snapshot(path, config.get("tables", []))
+            elif kind in {"authorization-state", "jvm-protocol"}:
+                path = _contained_path(workspace, config.get("path", ""),
+                                       "authorization state path")
+                before = collector.snapshot(path, config.get("paths", []))
+            else:
+                before = collector.snapshot()
+        except (OSError, TypeError, ValueError):
+            before = {"status": "pending", "reason": "observer-scope-invalid"}
+        prepared.append({"kind": kind, "collector": collector,
+                         "config": config, "before": before})
+    return prepared
+
+
+def _collect_effect_observers(workspace: Path, prepared: List[Dict[str, Any]],
+                              run_id: str, candidate_id: str,
+                              cell_id: str) -> List[Dict[str, Any]]:
+    """Take after-snapshots and produce only bounded collector artifacts."""
+    effects: List[Dict[str, Any]] = []
+    for row in prepared:
+        kind = row["kind"]
+        collector = row["collector"]
+        config = row["config"]
+        try:
+            if kind == "filesystem-diff":
+                after = collector.snapshot(_contained_path(
+                    workspace, config.get("root", "."),
+                    "filesystem effect root"))
+            elif kind == "fixture-db":
+                path = _contained_path(workspace, config.get("path", ""),
+                                       "fixture DB path")
+                after = collector.snapshot(path, config.get("tables", []))
+            elif kind in {"authorization-state", "jvm-protocol"}:
+                path = _contained_path(workspace, config.get("path", ""),
+                                       "authorization state path")
+                after = collector.snapshot(path, config.get("paths", []))
+            else:
+                after = collector.snapshot()
+            if kind in {"process-effect", "jvm-effect"}:
+                effect = collector.collect(
+                    run_id, candidate_id, cell_id, row["before"], after,
+                    config.get("expected_names", []))
+            else:
+                effect = collector.collect(
+                    run_id, candidate_id, cell_id, row["before"], after)
+            if effect is not None:
+                effects.append(effect.as_dict())
+        except (OSError, TypeError, ValueError):
+            pending = collector._pending(
+                run_id, candidate_id, cell_id, kind,
+                collector.collector_id, "observer-collection-failed")
+            effects.append(pending.as_dict())
+    return effects
 
 
 def scan_source_egress(src_text: str, src_path: str = "",
@@ -425,6 +545,72 @@ class POCSpec:
     logic: str = ""
     notes: str = ""
     budget_key: str = ""
+    # Explicit target-side observers.  The runner only accepts bounded,
+    # workspace-local scopes and persists summaries, never raw target state.
+    effect_observers: Dict[str, Any] = field(default_factory=dict)
+
+
+def _s4_spec_identity(spec: Any, lane: str) -> str:
+    if lane == "java":
+        selector = {
+            "class_name": str(getattr(spec, "class_name", "")),
+            "src": str(getattr(spec, "src", "")),
+            "extra_srcs": sorted(str(item) for item in
+                                  getattr(spec, "extra_srcs", [])),
+            "safe_mode_jvm_prop": str(getattr(spec, "safe_mode_jvm_prop", "")),
+            "module_opts": list(getattr(spec, "module_opts", [])),
+            "module_run_opts": list(getattr(spec, "module_run_opts", [])),
+            "jvm_default": dict(getattr(spec, "jvm_default", {})),
+            "effect_observers": dict(getattr(spec, "effect_observers", {})),
+            "cells": [asdict(cell) for cell in getattr(spec, "cells", [])],
+        }
+    elif lane == "shell":
+        selector = {
+            "script": str(getattr(spec, "script", "")),
+            "urls": dict(getattr(spec, "urls", {})),
+            "env": dict(getattr(spec, "env", {})),
+            "entry": str(getattr(spec, "entry", "")),
+            "input_shape": str(getattr(spec, "input_shape", "")),
+            "logic": str(getattr(spec, "logic", "")),
+            "effect_observers": dict(getattr(spec, "effect_observers", {})),
+            "https_tls_certfile": str(getattr(spec, "https_tls_certfile", "")),
+            "https_tls_keyfile": str(getattr(spec, "https_tls_keyfile", "")),
+            "cells": [asdict(cell) for cell in getattr(spec, "cells", [])],
+        }
+    else:
+        raise ValueError("unknown S4 lane")
+    identity = {"candidate_id": str(getattr(spec, "candidate_id", "")),
+                "lane": lane, "selector": selector}
+    digest = hashlib.sha256(json.dumps(
+        identity, sort_keys=True, separators=(",", ":"),
+        ensure_ascii=False).encode("utf-8")).hexdigest()
+    return "s4spec-" + digest
+
+
+def _bind_s4_attempt(cells: List[Dict[str, Any]], spec_id: str,
+                     attempt_id: str, started_ns: int) -> None:
+    for cell in cells:
+        if isinstance(cell, dict):
+            cell["s4_spec_id"] = spec_id
+            cell["s4_attempt_id"] = attempt_id
+            cell["s4_attempt_started_ns"] = started_ns
+
+
+def _s4_attempt_identity(cell: Dict[str, Any]) -> Optional[tuple]:
+    spec_id = cell.get("s4_spec_id")
+    attempt_id = cell.get("s4_attempt_id")
+    started_ns = cell.get("s4_attempt_started_ns")
+    if (not isinstance(spec_id, str)
+            or not re.fullmatch(r"s4spec-[0-9a-f]{64}", spec_id)
+            or not isinstance(attempt_id, str)
+            or type(started_ns) is not int or started_ns <= 0):
+        return None
+    try:
+        if str(uuid.UUID(attempt_id)) != attempt_id:
+            return None
+    except (ValueError, AttributeError):
+        return None
+    return spec_id, attempt_id, started_ns
 
 
 ENV_ERROR_PATTERN = re.compile(
@@ -501,6 +687,24 @@ def _probe_java(java_bin: Path) -> Dict[str, str]:
             "error": "" if proc.returncode == 0 else "exit-%d" % proc.returncode}
 
 
+def select_java_executables(java_home: str = "", java_bin: str = ""
+                            ) -> tuple[Optional[Path], Optional[Path], Path]:
+    """Resolve exact executable paths without running target-selected code."""
+    if java_home:
+        home = Path(java_home).expanduser().resolve()
+        return home / "bin" / "java", home / "bin" / "javac", home
+    if java_bin:
+        java = _resolve_executable(java_bin, "java")
+        if java is None:
+            return None, None, Path("")
+        home = java.parent.parent if java.parent.name == "bin" else Path("")
+        return java, java.parent / "javac", home
+    java = _resolve_executable("", "java")
+    javac = _resolve_executable("", "javac")
+    home = java.parent.parent if java and java.parent.name == "bin" else Path("")
+    return java, javac, home
+
+
 def resolve_java_runtime(cell: MatrixCell) -> Dict[str, str]:
     """Resolve and verify the Java toolchain required by ``cell``.
 
@@ -513,22 +717,11 @@ def resolve_java_runtime(cell: MatrixCell) -> Dict[str, str]:
     if not required and re.search(r"(?:jdk|java)[-_ ]?(?:version[-_ ]?)?(?:8|11|17|21)",
                                  str(cell.precondition or ""), re.I):
         required = str(cell.precondition)
-    if cell.java_home:
-        home = Path(cell.java_home).expanduser().resolve()
-        java_bin = home / "bin" / "java"
-        javac_bin = home / "bin" / "javac"
-    elif cell.java_bin:
-        java_bin = _resolve_executable(cell.java_bin, "java")
-        if java_bin is None:
-            return {"available": "false", "status": RUNTIME_UNAVAILABLE,
-                    "reason": "java_bin unavailable: %s" % cell.java_bin,
-                    "required_runtime": required}
-        javac_bin = java_bin.parent / "javac"
-        home = java_bin.parent.parent if java_bin.parent.name == "bin" else Path("")
-    else:
-        java_bin = _resolve_executable("", "java")
-        javac_bin = _resolve_executable("", "javac")
-        home = java_bin.parent.parent if java_bin and java_bin.parent.name == "bin" else Path("")
+    java_bin, javac_bin, home = select_java_executables(cell.java_home, cell.java_bin)
+    if cell.java_bin and not cell.java_home and java_bin is None:
+        return {"available": "false", "status": RUNTIME_UNAVAILABLE,
+                "reason": "java_bin unavailable: %s" % cell.java_bin,
+                "required_runtime": required}
 
     if java_bin is None or not java_bin.exists() or not os.access(str(java_bin), os.X_OK):
         return {"available": "false", "status": RUNTIME_UNAVAILABLE,
@@ -751,7 +944,7 @@ def _trusted_observations(cell: Dict[str, Any]) -> Dict[str, Any]:
         return {}
     observations = cell.get("observations")
     if not isinstance(observations, dict) or set(observations) - {
-            "HTTP_CODE", "HTTP_RESPONSES"}:
+            "HTTP_CODE", "HTTP_RESPONSES", "HTTP_PREDICATES"}:
         return {}
     responses = observations.get("HTTP_RESPONSES")
     if not isinstance(responses, list) or len(responses) > 256:
@@ -777,6 +970,16 @@ def _trusted_observations(cell: Dict[str, Any]) -> Dict[str, Any]:
         request_ids.append(row["request_id"])
     if len(request_ids) != len(set(request_ids)):
         return {}
+    predicates = observations.get("HTTP_PREDICATES", [])
+    if not isinstance(predicates, list) or len(predicates) > 32:
+        return {}
+    for predicate in predicates:
+        if (not isinstance(predicate, dict)
+                or not isinstance(predicate.get("id"), str)
+                or not predicate.get("id")
+                or not isinstance(predicate.get("matched"), bool)
+                or ("error" in predicate and not isinstance(predicate.get("error"), str))):
+            return {}
     if (type(provenance.get("response_count")) is not int
             or provenance.get("response_count") != len(responses)
             or not isinstance(provenance.get("observer_gaps"), list)
@@ -809,6 +1012,66 @@ def _cell_poc_claims(cell: Dict[str, Any]) -> Dict[str, Any]:
     return {}
 
 
+def _trusted_observed_effects(cell: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Return only harness-shaped effects from a supported collector.
+
+    ``observed_effects`` is intentionally a separate field from PoC claims.
+    A row is accepted only when its schema, collector identity, scope and
+    digest shape agree with a collector registered by this runtime.  Invalid
+    or hand-authored rows are ignored and therefore cannot promote a verdict.
+    """
+    expected_run_id = cell.get("run_id")
+    expected_candidate_id = cell.get("candidate_id")
+    expected_cell_id = cell.get("cell_id")
+    if (not isinstance(expected_run_id, str)
+            or not isinstance(expected_candidate_id, str)
+            or not expected_candidate_id.strip()
+            or not isinstance(expected_cell_id, str)
+            or not re.fullmatch(r"[0-9a-f]{64}", expected_cell_id)):
+        return []
+    try:
+        if str(uuid.UUID(expected_run_id)) != expected_run_id:
+            return []
+    except (ValueError, AttributeError):
+        return []
+
+    rows = cell.get("observed_effects")
+    if not isinstance(rows, list):
+        return []
+    accepted: List[Dict[str, Any]] = []
+    for raw in rows[:64]:
+        if not isinstance(raw, dict):
+            continue
+        kind = str(raw.get("kind", "")).strip().lower()
+        collector = collector_for(kind)
+        if (raw.get("schema_version") != EFFECT_SCHEMA_VERSION
+                or collector is None
+                or raw.get("collector_id") != collector.collector_id
+                or raw.get("independent") is not True
+                or raw.get("status") not in {"observed", "absent", "pending"}
+                or raw.get("run_id") != expected_run_id
+                or raw.get("candidate_id") != expected_candidate_id
+                or raw.get("cell_id") != expected_cell_id
+                or not re.fullmatch(r"[0-9a-f]{64}",
+                                    str(raw.get("value_digest", "")))
+                or not isinstance(raw.get("details", {}), dict)):
+            continue
+        accepted.append({
+            "schema_version": raw["schema_version"],
+            "kind": kind,
+            "collector_id": raw["collector_id"],
+            "run_id": str(raw["run_id"])[:120],
+            "candidate_id": str(raw.get("candidate_id", ""))[:120],
+            "cell_id": str(raw.get("cell_id", ""))[:120],
+            "status": raw["status"],
+            "predicate_id": str(raw.get("predicate_id", ""))[:120],
+            "value_digest": raw["value_digest"],
+            "details": dict(raw.get("details", {})),
+            "independent": True,
+        })
+    return accepted
+
+
 class JavaMatrixRunner:
     def __init__(self, workspace: Path, target: str, round_no: int,
                  approval: Optional[ApprovalGate] = None,
@@ -820,6 +1083,7 @@ class JavaMatrixRunner:
         self.round_no = int(round_no)
         if self.round_no < 1:
             raise ValueError("round must be a positive integer")
+        self.raw_vault = RawVault.from_environment(self.workspace, self.target, self.round_no)
         self.approval = approval or ApprovalGate()
         self.authorized_staging = authorized_staging
         self.execution_budget = execution_budget or S4ExecutionBudget()
@@ -1059,6 +1323,18 @@ class JavaMatrixRunner:
                 wrapped_policy)
             denied.update(self._runtime_fields(runtime))
             return denied
+        run_id = str(uuid.uuid4())
+        cell_id = hashlib.sha256(json.dumps({
+            "candidate_id": spec.candidate_id,
+            "version": cell.version,
+            "safe_mode": cell.safe_mode,
+            "precondition": cell.precondition,
+            "features": list(cell.features),
+            "args": list(cell.args),
+            "authz_fixture_id": authz_fixture_id(cell.authz),
+        }, sort_keys=True, separators=(",", ":"),
+            ensure_ascii=False).encode("utf-8")).hexdigest()
+        effect_plan = _prepare_effect_observers(self.workspace, spec)
         try:
             result = self.runner.run(
                 isolated_cmd,
@@ -1088,6 +1364,8 @@ class JavaMatrixRunner:
             denied.update(_cell_metadata(cell))
             denied.update(self._runtime_fields(runtime))
             return denied
+        observed_effects = _collect_effect_observers(
+            self.workspace, effect_plan, run_id, spec.candidate_id, cell_id)
         poc_claims = parse_poc_claims(result.stdout, result.stderr)
         obs: Dict[str, Any] = {}
         authz_assertion = assert_authz_observations(cell.authz, obs)
@@ -1100,12 +1378,15 @@ class JavaMatrixRunner:
             "precondition": cell.precondition,
             "required_runtime": cell.required_runtime,
             "authz": normalize_authz_case(cell.authz),
+            "cell_id": cell_id,
+            "run_id": run_id,
             "returncode": result.returncode,
             "timed_out": result.timed_out,
             "duration_ms": result.duration_ms,
             "runner_timeout_seconds": result.timeout_seconds,
             "runner_timeout_capped": result.timeout_capped,
             "observations": obs,
+            "observed_effects": observed_effects,
             "poc_claims": poc_claims,
             "observation_provenance": {
                 "schema_version": POC_CLAIMS_SCHEMA,
@@ -1148,6 +1429,9 @@ class JavaMatrixRunner:
         all_results: Dict[str, List[Dict]] = {}
         for spec in specs:
             _safe_component(spec.candidate_id, "candidate_id")
+            spec_id = _s4_spec_identity(spec, "java")
+            attempt_id = str(uuid.uuid4())
+            attempt_started_ns = time.time_ns()
             results = []
             budget_id = _budget_key(spec)
             self.execution_budget.deadline_for(budget_id)
@@ -1157,6 +1441,8 @@ class JavaMatrixRunner:
                 results = [self._policy_cell(
                     spec, cell, "needs-network-isolation", reason, sandbox_policy)
                     for cell in spec.cells]
+                _bind_s4_attempt(results, spec_id, attempt_id,
+                                 attempt_started_ns)
                 all_results.setdefault(spec.candidate_id, []).extend(results)
                 continue
             if self._requires_network_observer(spec):
@@ -1168,6 +1454,8 @@ class JavaMatrixRunner:
                     for cell in spec.cells]
                 for item in results:
                     item["observation_gaps"] = ["java-network-observer-unavailable"]
+                _bind_s4_attempt(results, spec_id, attempt_id,
+                                 attempt_started_ns)
                 all_results.setdefault(spec.candidate_id, []).extend(results)
                 continue
             # Compile separately for different requested runtimes.  This keeps
@@ -1222,7 +1510,8 @@ class JavaMatrixRunner:
                         "required_runtime": cell.required_runtime,
                         "authz": normalize_authz_case(next(
                             (c.authz for c in group if c is cell), {})),
-                        "compile_error": (compiled.stderr or compiled.stdout)[-2000:],
+                        "compile_error": (compiled.stderr or compiled.stdout
+                                          or "compiler exited without diagnostics")[-2000:],
                         "compile_timed_out": compiled.timed_out,
                         "compile_duration_ms": compiled.duration_ms,
                         "compile_timeout_seconds": compiled.timeout_seconds,
@@ -1250,6 +1539,7 @@ class JavaMatrixRunner:
                         continue
                     results.append(self.run_cell(
                         spec, cell, jars, runtime, timeout=cell_timeout))
+            _bind_s4_attempt(results, spec_id, attempt_id, attempt_started_ns)
             all_results.setdefault(spec.candidate_id, []).extend(results)
         for candidate_id, cells in all_results.items():
             self._write_cells(candidate_id, cells)
@@ -1257,15 +1547,15 @@ class JavaMatrixRunner:
 
     def _write_cells(self, candidate_id: str, cells: List[Dict]) -> None:
         candidate_id = _safe_component(candidate_id, "candidate_id")
+        if self.raw_vault is not None:
+            self.raw_vault.capture_cells(candidate_id, cells)
         d = _contained_path(
             self.workspace,
             "state/%s/round-%02d/S4/matrix-runs/%s" % (
                 self.target, self.round_no, candidate_id),
             "candidate matrix directory")
-        d.mkdir(parents=True, exist_ok=True)
-        tmp = d / ("cells.json.tmp.%d" % os.getpid())
-        tmp.write_text(json.dumps(cells, indent=2, ensure_ascii=False), encoding="utf-8")
-        tmp.replace(d / "cells.json")
+        EvidenceStore(self.workspace).write_json(
+            (d / "cells.json").relative_to(self.workspace), cells)
 
 
 @dataclass
@@ -1280,6 +1570,11 @@ class ShellPOCSpec:
     logic: str = ""
     notes: str = ""
     budget_key: str = ""
+    effect_observers: Dict[str, Any] = field(default_factory=dict)
+    # Optional workspace-local certificate pair for the controlled HTTPS
+    # CONNECT fixture. Missing material remains an observer gap.
+    https_tls_certfile: str = ""
+    https_tls_keyfile: str = ""
 
 
 class ShellMatrixRunner:
@@ -1311,6 +1606,7 @@ class ShellMatrixRunner:
         self.round_no = int(round_no)
         if self.round_no < 1:
             raise ValueError("round must be a positive integer")
+        self.raw_vault = RawVault.from_environment(self.workspace, self.target, self.round_no)
         self.approval = approval or ApprovalGate()
         self.authorized_staging = authorized_staging
         self.execution_budget = execution_budget or S4ExecutionBudget()
@@ -1330,6 +1626,9 @@ class ShellMatrixRunner:
         all_results: Dict[str, List[Dict]] = {}
         for spec in specs:
             _safe_component(spec.candidate_id, "candidate_id")
+            spec_id = _s4_spec_identity(spec, "shell")
+            attempt_id = str(uuid.uuid4())
+            attempt_started_ns = time.time_ns()
             budget_id = _budget_key(spec)
             self.execution_budget.deadline_for(budget_id)
             results = []
@@ -1343,6 +1642,7 @@ class ShellMatrixRunner:
                         "shell", budget_id))
                     continue
                 results.append(self.run_cell(spec, cell, timeout=timeout))
+            _bind_s4_attempt(results, spec_id, attempt_id, attempt_started_ns)
             all_results.setdefault(spec.candidate_id, []).extend(results)
         for candidate_id, cells in all_results.items():
             self._write_cells(candidate_id, cells)
@@ -1512,7 +1812,19 @@ class ShellMatrixRunner:
         run_id = str(uuid.uuid4())
         try:
             if wants_http_observer:
-                observer = LoopbackHTTPObserver(target_url, run_id).start()
+                tls_certfile = None
+                tls_keyfile = None
+                if parsed_target and parsed_target.scheme.lower() == "https":
+                    if spec.https_tls_certfile and spec.https_tls_keyfile:
+                        tls_certfile = str(_contained_path(
+                            self.workspace, spec.https_tls_certfile,
+                            "HTTPS fixture certificate"))
+                        tls_keyfile = str(_contained_path(
+                            self.workspace, spec.https_tls_keyfile,
+                            "HTTPS fixture key"))
+                observer = LoopbackHTTPObserver(
+                    target_url, run_id, tls_certfile=tls_certfile,
+                    tls_keyfile=tls_keyfile).start()
         except (OSError, ValueError) as exc:
             result_payload = {
                 "candidate_id": spec.candidate_id,
@@ -1570,6 +1882,23 @@ class ShellMatrixRunner:
             "TMP": str(scratch_dir), "TEMP": str(scratch_dir),
             "VULNGATE_SCRATCH_DIR": str(scratch_dir),
         })
+
+        target_digest = observer.target_digest if observer is not None else ""
+        cell_identity = {
+            "candidate_id": spec.candidate_id,
+            "version": cell.version,
+            "safe_mode": cell.safe_mode,
+            "precondition": cell.precondition,
+            "features": list(cell.features),
+            "args": list(cell.args),
+            "source_digest": source_digest,
+            "target_digest": target_digest,
+            "authz_fixture_id": authz_fixture_id(cell.authz),
+        }
+        cell_id = hashlib.sha256(json.dumps(
+            cell_identity, sort_keys=True, separators=(",", ":"),
+            ensure_ascii=False).encode("utf-8")).hexdigest()
+        effect_plan = _prepare_effect_observers(self.workspace, spec)
 
         cmd = ["bash", str(script)] + list(cell.args)
         proxy_url = observer.proxy_url if observer is not None else None
@@ -1640,6 +1969,7 @@ class ShellMatrixRunner:
             return result_payload
         run_error = None
         result = None
+        configured_effects: List[Dict[str, Any]] = []
         try:
             result = self.runner.run(
                 run_cmd,
@@ -1652,6 +1982,8 @@ class ShellMatrixRunner:
         except PermissionError as exc:
             run_error = exc
         finally:
+            configured_effects = _collect_effect_observers(
+                self.workspace, effect_plan, run_id, spec.candidate_id, cell_id)
             if observer is not None:
                 observer.close()
             scratch.cleanup()
@@ -1664,21 +1996,20 @@ class ShellMatrixRunner:
         if observer is not None and requires_http_observation and "HTTP_CODE" not in obs:
             observer_gaps.append("expected-http-code-not-independently-observed")
 
-        target_digest = str(obs_snapshot.get("target_digest", "")) if obs_snapshot else ""
-        cell_identity = {
-            "candidate_id": spec.candidate_id,
-            "version": cell.version,
-            "safe_mode": cell.safe_mode,
-            "precondition": cell.precondition,
-            "features": list(cell.features),
-            "args": list(cell.args),
-            "source_digest": source_digest,
-            "target_digest": target_digest,
-            "authz_fixture_id": authz_fixture_id(cell.authz),
-        }
-        cell_id = hashlib.sha256(json.dumps(
-            cell_identity, sort_keys=True, separators=(",", ":"),
-            ensure_ascii=False).encode("utf-8")).hexdigest()
+        observed_effects = configured_effects
+        for predicate in obs.get("HTTP_PREDICATES", []) if isinstance(
+                obs.get("HTTP_PREDICATES", []), list) else []:
+            if not isinstance(predicate, dict) or not predicate.get("id"):
+                continue
+            observed_effects.append(HTTPSemanticCollector().collect(
+                run_id=str(obs_snapshot.get("run_id", "")),
+                candidate_id=spec.candidate_id,
+                cell_id=cell_id,
+                predicate_id=str(predicate.get("id")),
+                matched=bool(predicate.get("matched")),
+                details={"error": str(predicate.get("error", ""))[:80]}
+                if predicate.get("error") else {},
+            ).as_dict())
         if result is None:
             returncode = -3
             timed_out = False
@@ -1723,6 +2054,7 @@ class ShellMatrixRunner:
             "runner_timeout_capped": (result.timeout_capped
                                       if result is not None else False),
             "observations": obs,
+            "observed_effects": observed_effects,
             "poc_claims": poc_claims,
             "authz_assertion": authz_assertion,
             "stdout": stdout,
@@ -1791,15 +2123,15 @@ class ShellMatrixRunner:
 
     def _write_cells(self, candidate_id: str, cells: List[Dict]) -> None:
         candidate_id = _safe_component(candidate_id, "candidate_id")
+        if self.raw_vault is not None:
+            self.raw_vault.capture_cells(candidate_id, cells)
         d = _contained_path(
             self.workspace,
             "state/%s/round-%02d/S4/matrix-runs/%s" % (
                 self.target, self.round_no, candidate_id),
             "candidate matrix directory")
-        d.mkdir(parents=True, exist_ok=True)
-        tmp = d / ("cells.json.tmp.%d" % os.getpid())
-        tmp.write_text(json.dumps(cells, indent=2, ensure_ascii=False), encoding="utf-8")
-        tmp.replace(d / "cells.json")
+        EvidenceStore(self.workspace).write_json(
+            (d / "cells.json").relative_to(self.workspace), cells)
 
 
 _FALSY_MARKERS = ("", "true", "yes", "ok", "none", "null", "0", "false")
@@ -1942,6 +2274,9 @@ def classify_s4_execution(cells: List[Dict]) -> Dict[str, object]:
                 and cell.get("returncode") == 0)
 
     def _has_effect(cell: Dict) -> bool:
+        if any(row.get("status") == "observed"
+               for row in _trusted_observed_effects(cell)):
+            return True
         obs = _trusted_observations(cell)
         effect_kind = str(obs.get("EFFECT_KIND", "")).strip().lower()
         effect = str(obs.get("EFFECT", obs.get("SIDE_EFFECT", ""))).strip()
@@ -2057,26 +2392,35 @@ def converge_s4_cells(workspace: Path, target: str, round_no: int,
     deduplicated by their serialized cell content.
     """
     root = Path(workspace).resolve()
+    from ..orchestrator.run_identity import RunIdentityError
     target = _safe_component(target, "target")
     candidate_id = _safe_component(candidate_id, "candidate_id")
     round_no = int(round_no)
     if round_no < 1:
         raise ValueError("round must be a positive integer")
     round_dir = "round-%02d" % round_no
-    s4_dir = _contained_path(
-        root, "state/%s/%s/S4" % (target, round_dir), "S4 artifact directory")
-    matrix_file = _contained_path(
-        root, "state/%s/%s/S4/matrix-runs/%s/cells.json" % (
-            target, round_dir, candidate_id), "candidate matrix artifact")
+    # Preserve the intended lexical identity. Resolving an alias first could
+    # turn current-round data into an out-of-scope historical read.
+    s4_dir = root / "state" / target / round_dir / "S4"
+    matrix_file = s4_dir / "matrix-runs" / candidate_id / "cells.json"
+    storage = EvidenceStore(root)
+    if s4_dir.exists() and storage._binding_for(s4_dir.relative_to(root)) is not None:
+        try:
+            with storage._directory(s4_dir.relative_to(root).parts, create=False):
+                pass
+        except OSError as exc:
+            raise RunIdentityError("bound S4 directory is unsafe") from exc
     candidates = []
     if runner_cells:
         scoped_runner = _extract_s4_cells(runner_cells, candidate_id)
         if scoped_runner:
             candidates.append(("runner", scoped_runner))
-    if matrix_file.is_file() and matrix_file.resolve().is_relative_to(s4_dir.resolve()):
+    if matrix_file.is_file():
         try:
             candidates.append(("persisted", _extract_s4_cells(
-                json.loads(matrix_file.read_text(encoding="utf-8")), candidate_id)))
+                json.loads(storage.read_text(matrix_file.relative_to(root))), candidate_id)))
+        except RunIdentityError:
+            raise
         except (OSError, ValueError):
             pass
     if s4_dir.exists():
@@ -2090,11 +2434,33 @@ def converge_s4_cells(workspace: Path, target: str, round_no: int,
             except OSError:
                 continue
             try:
-                cells = _extract_s4_cells(json.loads(path.read_text(encoding="utf-8")), candidate_id)
+                cells = _extract_s4_cells(json.loads(EvidenceStore(root).read_text(path.relative_to(root))), candidate_id)
+            except RunIdentityError:
+                raise
             except (OSError, ValueError):
                 cells = []
             if cells:
                 candidates.append(("fallback:%s" % path.name, cells))
+
+    latest_attempts: Dict[str, tuple] = {}
+    active_attempts: Dict[str, str] = {}
+    for source, cells in candidates:
+        for cell in cells:
+            if not isinstance(cell, dict):
+                continue
+            identity = _s4_attempt_identity(cell)
+            if identity is None:
+                continue
+            spec_id, attempt_id, started_ns = identity
+            if source == "runner":
+                active_attempts[spec_id] = attempt_id
+            previous = latest_attempts.get(spec_id)
+            if previous is None or started_ns > previous[1]:
+                latest_attempts[spec_id] = (attempt_id, started_ns)
+    latest_attempts.update({
+        spec_id: (attempt_id, latest_attempts.get(spec_id, ("", 0))[1])
+        for spec_id, attempt_id in active_attempts.items()
+    })
 
     merged: List[Dict] = []
     seen = set()
@@ -2104,10 +2470,20 @@ def converge_s4_cells(workspace: Path, target: str, round_no: int,
             continue
         sources.append(source)
         for cell in cells:
-            try:
-                key = json.dumps(cell, sort_keys=True, ensure_ascii=False)
-            except (TypeError, ValueError):
-                key = repr(cell)
+            identity = _s4_attempt_identity(cell)
+            if identity is None:
+                # Once current code emits attempt identities, legacy cells in
+                # sidecar files cannot be mixed into that active result set.
+                if active_attempts and source != "runner":
+                    continue
+            else:
+                spec_id, attempt_id, _started_ns = identity
+                selected = latest_attempts.get(spec_id)
+                if selected and attempt_id != selected[0]:
+                    continue
+            # Diagnostics differ after persistence. Compare the same safe
+            # representation, retaining the first (live) cell for repair.
+            key = json.dumps(public_document(cell), sort_keys=True, ensure_ascii=False)
             if key not in seen:
                 seen.add(key)
                 merged.append(cell)
@@ -2167,6 +2543,8 @@ def summarize_candidate(cells: List[Dict]) -> Dict:
     http_evidence = []
     safe_equivalent = []
     effect_evidence = []
+    independent_effects = []
+    independent_effect_evidence = []
     availability_proof = []
     experiment_evidence = []
     capability_evidence = []
@@ -2183,6 +2561,16 @@ def summarize_candidate(cells: List[Dict]) -> Dict:
 
     for c in cells:
         obs = _trusted_observations(c)
+        for effect in _trusted_observed_effects(c):
+            row = dict(effect)
+            row.update({
+                "version": c.get("version"),
+                "safe": c.get("safe_mode"),
+                "precondition": c.get("precondition"),
+            })
+            independent_effects.append(row)
+            if row.get("status") == "observed":
+                independent_effect_evidence.append(row)
         claims = _cell_poc_claims(c)
         claim_fields = claims.get("fields", {}) if isinstance(claims, dict) else {}
         if isinstance(claim_fields, dict) and claim_fields:
@@ -2340,7 +2728,6 @@ def summarize_candidate(cells: List[Dict]) -> Dict:
                                                     ("canary", "simulat", "shape-only", "in-memory")))
                 or (lk and lk.lower() not in _FALSY_MARKERS)
                 or (truthy(obs.get("NETWORK")) and "://" in str(obs.get("NETWORK")))
-                or (ev and ev.lower() not in _FALSY_MARKERS)
                 or bool(assertion and assertion.get("boundary_violation")))
             contract = _declared_residual_contracts(c).get(residual_id, {})
             residual_falsifiers.append({
@@ -2367,6 +2754,8 @@ def summarize_candidate(cells: List[Dict]) -> Dict:
         "http_evidence": http_evidence,
         "safe_equivalent": safe_equivalent,
         "effect_evidence": effect_evidence,
+        "independent_effects": independent_effects,
+        "independent_effect_evidence": independent_effect_evidence,
         "availability_proof": availability_proof,
         "experiment_evidence": experiment_evidence,
         "capability_evidence": capability_evidence,

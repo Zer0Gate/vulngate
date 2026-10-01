@@ -44,7 +44,7 @@ from bisect import bisect_left, bisect_right
 from dataclasses import replace
 from pathlib import Path
 from threading import RLock
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from ..analysis.languages import (LANGUAGE_SUFFIXES, SourceFilter,
                                   SourceScanTimeout, iter_source_files,

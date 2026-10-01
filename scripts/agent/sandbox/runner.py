@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from .approval import ApprovalGate
+from ..orchestrator.work_budget import WorkBudgetExceeded
 
 
 @dataclass
@@ -45,7 +46,7 @@ class RunResult:
     process_tree_cleanup: Dict[str, Any] = field(default_factory=dict)
 
 
-POC_RESOURCE_POLICY_VERSION = "posix-rlimit-as4g-headroom-cpu-fsize64m-nofile512-nproc128-core0-v6"
+POC_RESOURCE_POLICY_VERSION = "posix-rlimit-controller-launcher-as4g-headroom-cpu-fsize64m-nofile512-nproc128-core0-monotone-v8"
 POC_MAX_FILE_BYTES = 64 * 1024 * 1024
 POC_MAX_OPEN_FILES = 512
 POC_MAX_PROCESS_SPAWN_DELTA = 128
@@ -70,6 +71,32 @@ open_files="$3"
 user_process_limit="$4"
 address_space_kib="$5"
 shift 5
+# Namespace/container health commands can inherit a stricter profile from
+# their host client or service. Independently measured NPROC/AS baselines
+# fluctuate: never try to raise the inherited hard cap, even transiently.
+# Malformed/unsupported ulimit output fails closed under set -e.
+clamp_to_hard() {
+  case "$2" in
+    unlimited) bounded_limit="$1" ;;
+    ''|*[!0-9]*) return 1 ;;
+    *)
+      if [ "$2" -lt "$1" ]; then
+        bounded_limit="$2"
+      else
+        bounded_limit="$1"
+      fi ;;
+  esac
+}
+clamp_to_hard "$cpu_limit" "$(ulimit -H -t)"
+cpu_limit="$bounded_limit"
+clamp_to_hard "$file_blocks" "$(ulimit -H -f)"
+file_blocks="$bounded_limit"
+clamp_to_hard "$open_files" "$(ulimit -H -n)"
+open_files="$bounded_limit"
+clamp_to_hard "$user_process_limit" "$(ulimit -H -u)"
+user_process_limit="$bounded_limit"
+clamp_to_hard "$address_space_kib" "$(ulimit -H -v)"
+address_space_kib="$bounded_limit"
 ulimit -S -c 0
 ulimit -H -c 0
 ulimit -S -n "$open_files"
@@ -114,26 +141,40 @@ def _user_process_limit() -> Tuple[int, int]:
 
 
 def _address_space_baseline_bytes() -> int:
-    """Measure the controller VM map that Darwin executables inherit."""
+    """Measure both Darwin controller and native launcher VM maps.
+
+    Exec can replace the VM layout: an older Python can map less shared-cache
+    address space than /bin/bash, even when both are arm64. Setting bash's AS
+    limit from Python's VSZ alone can therefore fail before the target starts.
+    This bounds virtual address space, not resident/process-tree memory.
+    """
     if sys.platform != "darwin":
         return 0
+    commands = (
+        ["/bin/ps", "-o", "vsz=", "-p", str(os.getpid())],
+        # Keep bash alive (no tail exec optimization) while ps measures it.
+        ["/bin/bash", "-c", 'set -e; /bin/ps -o vsz= -p "$$"; :'],
+    )
+    values = []
     try:
-        result = subprocess.run(
-            ["/bin/ps", "-o", "vsz=", "-p", str(os.getpid())],
-            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL, text=True, timeout=3, check=True)
-        value = int(result.stdout.strip()) * 1024
+        for command in commands:
+            result = subprocess.run(
+                command, env={"PATH": os.defpath},
+                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL, text=True, timeout=3, check=True)
+            value = int(result.stdout.strip()) * 1024
+            if value < 1 or value > 1024 * 1024 * 1024 * 1024:
+                raise ValueError("Darwin VM baseline is out of range")
+            values.append(value)
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
         raise PermissionError(
             "cannot determine Darwin address-space baseline: %s" %
             type(exc).__name__) from exc
-    if value < 1 or value > 1024 * 1024 * 1024 * 1024:
-        raise PermissionError("Darwin address-space baseline is out of range")
-    return value
+    return max(values)
 
 
 def _address_space_limit_bytes(baseline_bytes: int) -> int:
-    """Set a 4 GiB cap, measured from the inherited Darwin VM-map baseline."""
+    """Set a 4 GiB headroom cap above the measured VM-map baseline."""
     import resource
 
     if not hasattr(resource, "RLIMIT_AS"):
@@ -235,7 +276,7 @@ def prepare_posix_resource_limited_command(
     try:
         preflight = subprocess.run(
             _resource_limited_argv([
-                sys.executable, "-c", limit_check,
+                sys.executable, "-I", "-S", "-c", limit_check,
                 str(resource_limits["cpu_seconds_per_process"]),
                 str(resource_limits["max_file_bytes"]),
                 str(resource_limits["max_open_files"]),
@@ -245,7 +286,9 @@ def prepare_posix_resource_limited_command(
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE, text=True,
             timeout=max(1, min(int(preflight_timeout), 5)), check=False,
-            env=env)
+            # The verifier runs before the target sandbox exists. Never pass
+            # target-controlled BASH_ENV, loader, or Python startup hooks to it.
+            env={"PATH": POC_SAFE_PATH, "LC_ALL": "C"})
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise PermissionError(
             "required POSIX resource-limit preflight failed: %s" %
@@ -797,6 +840,20 @@ class CommandRunner:
                 timeout_seconds=effective_timeout, timeout_capped=timeout_capped,
                 scratch_limits=scratch_limits, abort_reason=prelaunch_abort_reason,
                 process_tree_cleanup=process_tree_cleanup)
+        work_budget = getattr(self.execution_budget, "work_budget", None)
+        if work_budget is not None:
+            try:
+                work_budget.acquire_process()
+            except WorkBudgetExceeded as exc:
+                reason = "shared process budget exhausted: %s" % str(exc)[:160]
+                scratch_limits["status"] = "aborted"
+                scratch_limits["abort_reason"] = reason
+                return RunResult(
+                    normalized_cmd, -1, "", reason, int((time.monotonic() - t0) * 1000),
+                    resource_limits=resource_limits,
+                    timeout_seconds=effective_timeout, timeout_capped=timeout_capped,
+                    scratch_limits=scratch_limits, abort_reason=reason,
+                    process_tree_cleanup=process_tree_cleanup)
         try:
             proc = subprocess.Popen(
                 popen_cmd, cwd=str(cwd), env=env,

@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from ..memory.evidence_store import EvidenceStore
 import sys
 import time
 from dataclasses import dataclass, field
@@ -923,7 +924,10 @@ def run_fuzz_for_pipeline(workspace: Path, cfg: TargetConfig, round_no: int,
     corpus_file = fuzz_dir / "fuzz-corpus.json"
     lab_file = fuzz_dir / "runtime-lab.json"
     if not force and cand_file.exists() and corpus_file.exists() and lab_file.exists():
-        cands = json.loads(cand_file.read_text(encoding="utf-8"))
+        store = EvidenceStore(workspace)
+        cands = json.loads(store.read_text(cand_file.relative_to(workspace)))
+        store.read_bytes(corpus_file.relative_to(workspace))
+        store.read_bytes(lab_file.relative_to(workspace))
         print("[fuzz] existing candidates and runtime-lab artifacts loaded: %d" % len(cands))
         return cands
     if not force and cand_file.exists():
@@ -963,8 +967,7 @@ def run_fuzz_for_pipeline(workspace: Path, cfg: TargetConfig, round_no: int,
             "jsonb_entries": fz.get("jsonb_entries") or [],
             "json_entries": fz.get("json_entries") or [],
         }))
-    (fuzz_dir / "fuzz-corpus.json").write_text(
-        json.dumps(corpus, indent=2, ensure_ascii=False), encoding="utf-8")
+    EvidenceStore(workspace).write_json((fuzz_dir / "fuzz-corpus.json").relative_to(workspace), corpus)
     try:
         runtime_lab = run_runtime_lab(
             workspace, cfg, round_no, triggers, minimized, jvm, timeout_ms,
@@ -977,8 +980,7 @@ def run_fuzz_for_pipeline(workspace: Path, cfg: TargetConfig, round_no: int,
         }
     lab_ref = "state/%s/round-%02d/FUZZ/runtime-lab.json" % (
         cfg.name, round_no)
-    (fuzz_dir / "runtime-lab.json").write_text(
-        json.dumps(runtime_lab, indent=2, ensure_ascii=False), encoding="utf-8")
+    EvidenceStore(workspace).write_json((fuzz_dir / "runtime-lab.json").relative_to(workspace), runtime_lab)
     cands = emit_candidates(triggers, minimized, jvm, probe_rel,
                             known_upstream=fz.get("known_upstream", {}))
     lab_by_fixture = {
@@ -1011,14 +1013,10 @@ def run_fuzz_for_pipeline(workspace: Path, cfg: TargetConfig, round_no: int,
         "claim_status": "not-a-finding",
     }
     report["duration_sec"] = round(time.monotonic() - t0, 1)
-    (fuzz_dir / "fuzz-report.json").write_text(
-        json.dumps({"report": report,
-                    "triggers": [dict(t) for t in triggers.values()],
-                    "minimized": minimized}, indent=2, ensure_ascii=False),
-        encoding="utf-8")
-    cand_file.write_text(json.dumps(cands, indent=2, ensure_ascii=False),
-                         encoding="utf-8")
-    _write_report_md(fuzz_dir, report, triggers, minimized)
+    EvidenceStore(workspace).write_json((fuzz_dir / "fuzz-report.json").relative_to(workspace),
+        {"report": report, "triggers": [dict(t) for t in triggers.values()], "minimized": minimized})
+    EvidenceStore(workspace).write_json(cand_file.relative_to(workspace), cands)
+    _write_report_md(fuzz_dir, report, triggers, minimized, workspace)
     print("[fuzz] discovered: %d inputs, %d cells, %d triggers, %d candidates"
           % (report["inputs_generated"], report["cells_run"],
              report["trigger_count"], len(cands)))
@@ -1027,7 +1025,7 @@ def run_fuzz_for_pipeline(workspace: Path, cfg: TargetConfig, round_no: int,
 
 def _write_report_md(fuzz_dir: Path, report: Dict[str, Any],
                      triggers: Dict[Tuple[str, str, str], Dict[str, Any]],
-                     minimized: Dict[str, Dict[str, Any]]) -> None:
+                     minimized: Dict[str, Dict[str, Any]], workspace: Optional[Path] = None) -> None:
     lines = [
         "# 定向模糊轮次报告（2.1）",
         "",
@@ -1063,7 +1061,11 @@ def _write_report_md(fuzz_dir: Path, report: Dict[str, Any],
         for key, m in minimized.items():
             lines.append("| %s | %d | %d | %d | `%s` |" % (
                 key[:60], m["orig_len"], m["len"], m["attempts"], m["hex"][:64]))
-    (fuzz_dir / "fuzz-report.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    path = fuzz_dir / "fuzz-report.md"
+    if workspace is not None:
+        EvidenceStore(workspace).write_text(path.relative_to(workspace), "\n".join(lines) + "\n")
+    else:
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 # ---- CLI ----------------------------------------------------------------

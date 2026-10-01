@@ -161,7 +161,7 @@ class PolicyTests(unittest.TestCase):
                 result.resource_limits["address_space_baseline_bytes"],
                 4 * 1024 * 1024 * 1024)
             self.assertEqual(result.resource_limits["policy"],
-                             "posix-rlimit-as4g-headroom-cpu-fsize64m-nofile512-nproc128-core0-v6")
+                             "posix-rlimit-controller-launcher-as4g-headroom-cpu-fsize64m-nofile512-nproc128-core0-monotone-v8")
 
     def test_patch_history_extracts_fix_variants_read_only(self):
         with tempfile.TemporaryDirectory() as td:
@@ -361,6 +361,10 @@ class EvidenceTests(unittest.TestCase):
                     "observation_gaps", "resource_limit_exceeded",
                     "resource_limits")})
             self.assertEqual(_trusted_observations(results[0])["HTTP_CODE"], "403")
+            persisted = json.loads((root / "state/demo/round-01/S4/matrix-runs/A1/cells.json").read_text())
+            self.assertEqual(_trusted_observations(results[0]), _trusted_observations(persisted[0]))
+            self.assertEqual(derive_conclusion({}, cells=results),
+                             derive_conclusion({}, cells=persisted))
             self.assertEqual(results[0]["poc_claims"]["fields"]["HTTP_CODE"], ["200"])
             self.assertEqual(results[0]["authz_assertion"]["status"], "passed")
             forged_limits = dict(results[0]["resource_limits"])

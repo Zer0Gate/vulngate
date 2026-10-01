@@ -198,7 +198,7 @@ See [native-target usage](macos/README.md) and
 ### Prerequisites
 
 - Codex (CLI or desktop app), version with plugin support
-- Python 3.8+
+- Python 3.10+
 - JDK 8+ for JVM targets (17/21 recommended); native targets require macOS Command Line Tools
 - `rg` (ripgrep) for source mapping
 
@@ -210,15 +210,20 @@ cd vulngate
 ./install.sh
 ```
 
-`install.sh` copies the plugin to `~/plugins/vulngate`, registers the personal marketplace, and enables it in Codex (`codex plugin add vulngate@personal`). It searches for the `codex` command in `$PATH` and in supported desktop-app locations.
+`install.sh` publishes a verified, content-addressed plugin generation through
+`~/plugins/vulngate`, registers the personal marketplace, and enables it in Codex
+(`codex plugin add vulngate@personal`). It searches for `codex` in `$PATH` and
+supported desktop-app locations. Use `--no-enable` to install without activation.
 
 > **Open a new thread after installation.** Plugin skills are loaded at thread start.
 
-For an existing installation, rerun `./install.sh` to update it. The installer
-preserves compatibility aliases for older versioned skill-cache paths, so an
-audit task that is already running does not lose its `SKILL.md` during the
-update. Avoid running a bare `codex plugin add vulngate@personal` while an audit
-task is active.
+Stop active audit tasks before updating, then rerun `./install.sh`. Previous
+source generations are retained, but Codex owns its skill-cache lifecycle. Old
+version paths are never aliased to new content; a thread whose cache disappears
+must stop. Start a new thread after activation. The installer preserves the
+source manifest version and rejects changed content under an existing version;
+development updates must bump the cachebuster first. See
+[installation transactions and recovery](docs/INSTALLATION.md).
 
 ### Manual install
 
