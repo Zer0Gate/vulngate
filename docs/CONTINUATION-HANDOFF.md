@@ -1,5 +1,17 @@
 # VulnGate 整改续接记录（2026-09-29）
 
+## 2026-10-01 增量：R06 S4 spec 身份覆盖执行配置与矩阵
+
+在现有 `s4_spec_id` 中纳入 Java/Shell 执行选择器、observer/TLS 配置和每个
+`MatrixCell` 的完整配置，防止同候选/同文件但矩阵参数不同的旧 attempt 被当作
+同一规格；规范化 JSON 严格序列化，不把非 JSON 值隐式转成字符串。evidence policy
+升至 v20，并新增回归断言证明模块参数、observer、URL 和矩阵 cell 变化会产生不同
+spec identity。`tests.test_artifact_identity` 16 项通过（Python 3.13），`git diff
+--check` 通过。当前分支头 `2fa5b0f` 的远端 CI `36795215907` 已 SUCCESS，但不包含
+本增量；本增量提交后的四平台矩阵、隔离、security 和 CodeQL 仍须核验。R06 仍为
+partial：实际 PoC 源字节摘要/完整活动 spec 闭包、镜像 launch 固定与 validate-to-use
+冻结尚未完成。PR #8 继续保持 draft，单人仓库审批数为 0，不以自我批准作为门槛。
+
 ## 2026-10-01 增量：单人维护的 main 门禁策略
 
 main 继续要求 PR、管理员强制执行、严格必需检查且禁止强推/删除；不再要求

@@ -3,6 +3,7 @@ import json
 import os
 import tempfile
 import unittest
+from dataclasses import replace
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack
 from contextvars import copy_context
@@ -14,7 +15,10 @@ from agent.memory.evidence_store import EvidenceStore
 from agent.memory.state import CheckpointStore
 from agent.memory.ledger import write_round_artifacts
 from agent.orchestrator.run_identity import RunIdentityError
-from agent.tools.build import converge_s4_cells, JavaMatrixRunner
+from agent.tools.build import (
+    MatrixCell, POCSpec, ShellPOCSpec, _s4_spec_identity,
+    converge_s4_cells, JavaMatrixRunner,
+)
 
 
 class ArtifactIdentityTests(unittest.TestCase):
@@ -185,6 +189,45 @@ class ArtifactIdentityTests(unittest.TestCase):
         merged, _ = converge_s4_cells(
             self.root, "fixture", 1, "A1", [current])
         self.assertEqual([current, sibling], merged)
+
+    def test_s4_spec_identity_binds_execution_and_observer_configuration(self):
+        java = POCSpec(
+            candidate_id="A1", class_name="Probe", src="Probe.java", cells=[],
+            safe_mode_jvm_prop="safe.mode", module_opts=["--add-exports=x/y=z"],
+            module_run_opts=["--add-opens=x/y=z"], jvm_default={"heap": "1g"},
+            effect_observers={"file": {"path": "state/result"}},
+        )
+        self.assertNotEqual(
+            _s4_spec_identity(java, "java"),
+            _s4_spec_identity(replace(java, module_run_opts=["--add-opens=x/y=q"]), "java"),
+        )
+        self.assertNotEqual(
+            _s4_spec_identity(java, "java"),
+            _s4_spec_identity(replace(java, effect_observers={}), "java"),
+        )
+        self.assertNotEqual(
+            _s4_spec_identity(java, "java"),
+            _s4_spec_identity(replace(java, cells=[MatrixCell("2", False)]), "java"),
+        )
+
+        shell = ShellPOCSpec(
+            candidate_id="A1", script="probe.sh", cells=[],
+            env={"MODE": "safe"}, urls={"1": "http://127.0.0.1:8080"},
+            input_shape="json", effect_observers={"http": {"origin": "local"}},
+            https_tls_certfile="fixture.crt", https_tls_keyfile="fixture.key",
+        )
+        self.assertNotEqual(
+            _s4_spec_identity(shell, "shell"),
+            _s4_spec_identity(replace(shell, urls={"1": "http://127.0.0.1:8081"}), "shell"),
+        )
+        self.assertNotEqual(
+            _s4_spec_identity(shell, "shell"),
+            _s4_spec_identity(replace(shell, effect_observers={}), "shell"),
+        )
+        self.assertNotEqual(
+            _s4_spec_identity(shell, "shell"),
+            _s4_spec_identity(replace(shell, cells=[MatrixCell("2", False)]), "shell"),
+        )
 
     def test_report_and_ledger_resume_revalidate_publication_bytes(self):
         report = EvidenceStore(self.root).write_text("reports/fixture/round-01/finding.md", "pending")

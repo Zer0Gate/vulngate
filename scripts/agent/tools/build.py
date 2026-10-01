@@ -19,7 +19,7 @@ import tempfile
 import threading
 import time
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlsplit
@@ -557,9 +557,26 @@ def _s4_spec_identity(spec: Any, lane: str) -> str:
             "src": str(getattr(spec, "src", "")),
             "extra_srcs": sorted(str(item) for item in
                                   getattr(spec, "extra_srcs", [])),
+            "safe_mode_jvm_prop": str(getattr(spec, "safe_mode_jvm_prop", "")),
+            "module_opts": list(getattr(spec, "module_opts", [])),
+            "module_run_opts": list(getattr(spec, "module_run_opts", [])),
+            "jvm_default": dict(getattr(spec, "jvm_default", {})),
+            "effect_observers": dict(getattr(spec, "effect_observers", {})),
+            "cells": [asdict(cell) for cell in getattr(spec, "cells", [])],
         }
     elif lane == "shell":
-        selector = {"script": str(getattr(spec, "script", ""))}
+        selector = {
+            "script": str(getattr(spec, "script", "")),
+            "urls": dict(getattr(spec, "urls", {})),
+            "env": dict(getattr(spec, "env", {})),
+            "entry": str(getattr(spec, "entry", "")),
+            "input_shape": str(getattr(spec, "input_shape", "")),
+            "logic": str(getattr(spec, "logic", "")),
+            "effect_observers": dict(getattr(spec, "effect_observers", {})),
+            "https_tls_certfile": str(getattr(spec, "https_tls_certfile", "")),
+            "https_tls_keyfile": str(getattr(spec, "https_tls_keyfile", "")),
+            "cells": [asdict(cell) for cell in getattr(spec, "cells", [])],
+        }
     else:
         raise ValueError("unknown S4 lane")
     identity = {"candidate_id": str(getattr(spec, "candidate_id", "")),
